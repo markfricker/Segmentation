@@ -1,74 +1,114 @@
 function [BW, T] = localThresholdFast(I, varargin)
-% localThresholdFast Fast local/adaptive thresholding with separated paths
-% for morphological operations
+% localThresholdFast  Fast local/adaptive thresholding
 %
+% USAGE
 %   BW = localThresholdFast(I)
-%   BW = localThresholdFast(I, name, value, ...)
+%   BW = localThresholdFast(I, Name, Value, ...)
 %   [BW, T] = localThresholdFast(...)
 %
-%   methods:
+% INPUTS
+%   I  : 2-D grayscale image (uint8, uint16, single, double, or logical)
 %
-%     morphological (fast, O(N)):
-%       'midgrey'      local mid-grey threshold
-%       'bernsen'      classical Bernsen method
+% NAME-VALUE PAIRS
+%   'method'     : thresholding method (default 'sauvola')
+%                  morphological (O(N) via erosion/dilation):
+%                    'midgrey'    — local mid-grey threshold
+%                    'bernsen'    — classical Bernsen method
+%                  mean only:
+%                    'bradley'    — Bradley-Roth adaptive mean
+%                  mean + standard deviation:
+%                    'niblack'    — Niblack
+%                    'sauvola'    — Sauvola & Pietikainen (default)
+%                    'wolf'       — Wolf-Jolion
+%                    'nick'       — NICK
+%                    'phansalkar' — Phansalkar
+%   'windowsize' : odd neighbourhood size in pixels (default 25)
+%   'k'          : method sensitivity parameter (default varies by method)
+%   'r'          : dynamic range parameter for sauvola/wolf/phansalkar
+%                  (default: 128 for integer images, 0.5 for [0,1] images)
+%   'p','q'      : phansalkar shape parameters (default p=2, q=10)
+%   'contrast'   : contrast threshold for bernsen (default 15)
+%   'invert'     : invert binary output (default false)
+%   'precision'  : 'single' (default) or 'double'
 %
-%     mean-only:
-%       'bradley'      Bradley–Roth adaptive mean
+% OUTPUTS
+%   BW : logical binary image (true = foreground)
+%   T  : threshold surface (same size as I; only computed when requested)
 %
-%     mean + standard deviation:
-%       'niblack'      Niblack
-%       'sauvola'      Sauvola & Pietikäinen (default)
-%       'wolf'         Wolf–Jolion
-%       'nick'         NICK
-%       'phansalkar'   Phansalkar
+% OVERVIEW
+%   Global thresholding assigns a single value T to the whole image and
+%   classifies pixels as foreground where I >= T.  This fails when
+%   illumination is uneven or local contrast varies across the field.
 %
-%   input:
-%     I  : 2-D grayscale image (uint8, uint16, single, double, logical)
+%   Local (adaptive) thresholding instead computes an independent threshold
+%   T(x,y) for each pixel based on the statistics of a rectangular
+%   neighbourhood of size windowsize x windowsize centred at (x,y).
 %
-%   name–value pairs:
-%     'method'     : thresholding method (default 'sauvola')
-%     'windowsize' : odd neighbourhood size (default 25)
-%     'k'          : method parameter (varies by algorithm)
-%     'r'          : dynamic range parameter (sauvola/wolf/phansalkar)
-%     'p','q'      : phansalkar parameters (default p=2, q=10)
-%     'contrast'   : contrast threshold for bernsen (default 15)
-%     'invert'     : invert binary output (default false)
-%     'precision'  : 'single' (default) or 'double'
+%   Statistical methods (Niblack, Sauvola, etc.) express T as a function
+%   of the local mean mu and standard deviation sigma:
 %
-%   outputs:
-%     BW : logical binary image (true = foreground)
-%     T  : threshold surface (only returned if requested)
+%       Niblack:    T = mu + k * sigma
+%       Sauvola:    T = mu * (1 + k * (sigma/R - 1))
+%       Wolf:       T = mu + k * ((sigma/R - 1) * (mu - min_global))
+%       NICK:       T = mu + k * sqrt(sigma^2 + mu^2)
+%       Phansalkar: T = mu * (1 + p*exp(-q*mu) + k*(sigma/R - 1))
+%       Bradley:    T = mu * (1 - k)
 %
-%   performance notes:
-%     - morphological methods use erosion/dilation and are O(N).
-%     - statistical methods use convolution-based local statistics.
-%     - threshold surface T is only computed when requested.
+%   Local mu and sigma^2 are computed efficiently in O(N) using
+%   separable box-filter convolutions (equivalent to integral images).
 %
-% 
-%    references:
-%     Niblack, W. (1986). An introduction to digital image processing.
-%         Prentice-Hall.
+%   Morphological methods avoid statistics entirely.  midgrey computes
+%   T(x,y) = 0.5*(local_min + local_max) using erosion and dilation with
+%   a flat disk structuring element.  Bernsen extends midgrey by treating
+%   low-contrast regions separately.  Both run in O(N) regardless of
+%   window size when using the flat disk approximation.
 %
-%     Sauvola, J., and Pietikäinen, M. (2000). Adaptive document image
-%         binarization. Pattern Recognition, 33(2), 225–236.
+% NOTES
+%   - T is only computed when the second output argument is requested,
+%     avoiding the allocation cost in production use.
+%   - The r parameter default adapts to image range: 128 for integer-valued
+%     images (uint8/uint16 range) and 0.5 for normalised [0,1] inputs.
+%   - For fluorescence microscopy images normalised to [0,1], Sauvola with
+%     k=0.34, r=0.5, windowsize=25 is a reasonable starting point.
 %
-%     Wolf, C., and Jolion, J.-M. (2003). Extraction and recognition of
-%         artificial text in multimedia documents. Pattern Analysis and
-%         Applications, 6(4), 309–326.
+% REFERENCES
+%   Niblack, W. (1986). An introduction to digital image processing.
+%   Prentice-Hall.
 %
-%     Khurshid, K., Siddiqi, I., Faure, C., and Vincent, N. (2009).
-%         Comparison of niblack inspired binarization methods for ancient
-%         documents. Proceedings of ICDAR.
+%   Sauvola, J. and Pietikainen, M. (2000). Adaptive document image
+%   binarization. Pattern Recognition, 33(2), 225-236.
 %
-%     Phansalkar, N., More, S., Sabale, A., and Joshi, M. (2011).
-%         Adaptive local thresholding for detection of nuclei in
-%         diversity stained cytology images. ICCSP.
+%   Wolf, C. and Jolion, J.-M. (2003). Extraction and recognition of
+%   artificial text in multimedia documents. Pattern Analysis and
+%   Applications, 6(4), 309-326.
 %
-%     Bradley, D., and Roth, G. (2007). Adaptive thresholding using the
-%         integral image. Journal of Graphics Tools, 12(2), 13–21.
+%   Khurshid, K., Siddiqi, I., Faure, C. and Vincent, N. (2009).
+%   Comparison of Niblack inspired binarization methods for ancient
+%   documents. Proceedings of ICDAR.
 %
-%     Bernsen, J. (1986). Dynamic thresholding of grey-level images.
-%         Proceedings of ICPR.-------------------------------------------------------------------------
+%   Phansalkar, N., More, S., Sabale, A. and Joshi, M. (2011).
+%   Adaptive local thresholding for detection of nuclei in diversity
+%   stained cytology images. ICCSP.
+%
+%   Bradley, D. and Roth, G. (2007). Adaptive thresholding using the
+%   integral image. Journal of Graphics Tools, 12(2), 13-21.
+%
+%   Bernsen, J. (1986). Dynamic thresholding of grey-level images.
+%   Proceedings of ICPR.
+%
+% EXAMPLE
+%   % Sauvola thresholding on a normalised fluorescence image
+%   BW = localThresholdFast(I, 'method', 'sauvola', ...
+%                               'windowsize', 25, 'k', 0.34, 'r', 0.5);
+%
+%   % Morphological Bernsen — fast, no statistics
+%   BW = localThresholdFast(I, 'method', 'bernsen', 'windowsize', 31);
+%
+%   % Retrieve threshold surface for inspection
+%   [BW, T] = localThresholdFast(I, 'method', 'niblack', 'k', -0.2);
+%   figure; imshow(T, []); title('Threshold surface');
+%
+% See also: watershedSegment, imbinarize
 
 %% ---------------- input parsing ----------------
 p = inputParser;
@@ -95,11 +135,15 @@ invert = logical(p.Results.invert);
 prec   = validatestring(p.Results.precision,{'single','double'});
 
 %% ---------------- convert image once ----------------
-Iin = cast(I, prec);
+Iin  = cast(I, prec);
 maxI = max(Iin(:));
 
 if isempty(R)
-    R = (maxI > 1) * 128 + (maxI <= 1) * 0.5;
+    if maxI > 1
+        R = 128;
+    else
+        R = 0.5;
+    end
 end
 
 %% ============================================================
@@ -108,7 +152,7 @@ end
 
 if method == "midgrey" || method == "bernsen"
     radius = floor(win/2);
-    se = strel('disk', radius,0);
+    se = strel('disk', radius, 0);
     localMin = imerode(Iin, se);
     localMax = imdilate(Iin, se);
     mg = 0.5 .* (localMin + localMax);
@@ -118,8 +162,8 @@ if method == "midgrey" || method == "bernsen"
             T = mg;
         end
     else  % classical bernsen
-        contrast = localMax - localMin;
-        grayMid = cast(0.5, class(Iin));
+        contrast   = localMax - localMin;
+        grayMid    = cast(0.5, class(Iin));
         lowContrast  = contrast < C;
         highContrast = ~lowContrast;
         BW = false(size(Iin));
@@ -130,9 +174,7 @@ if method == "midgrey" || method == "bernsen"
             T(lowContrast) = grayMid;
         end
     end
-    if invert
-        BW = ~BW;
-    end
+    if invert, BW = ~BW; end
     return
 end
 
@@ -142,18 +184,14 @@ end
 
 if method == "bradley"
     if isempty(k), k = 0.15; end
-    pad = floor(win/2);
-    Ipad = padarray(Iin,[pad pad],'symmetric','both');
-    kernel = ones(win,win,prec) / (win*win);
+    pad    = floor(win/2);
+    Ipad   = padarray(Iin, [pad pad], 'symmetric', 'both');
+    kernel = ones(win, win, prec) / (win*win);
     localMean = conv2(Ipad, kernel, 'valid');
     Tlocal = localMean .* (1 - k);
     BW = Iin >= Tlocal;
-    if invert
-        BW = ~BW;
-    end
-    if nargout > 1
-        T = Tlocal;
-    end
+    if invert, BW = ~BW; end
+    if nargout > 1, T = Tlocal; end
     return
 end
 
@@ -162,26 +200,25 @@ end
 %% ============================================================
 
 switch method
-    case "niblack",     if isempty(k), k = -0.2; end
-    case "sauvola",     if isempty(k), k = 0.34; end
-    case "wolf",        if isempty(k), k = 0.5; end
-    case "nick",        if isempty(k), k = -0.1; end
-    case "phansalkar",  if isempty(k), k = 0.25; end
+    case "niblack",     if isempty(k), k = -0.2;  end
+    case "sauvola",     if isempty(k), k =  0.34; end
+    case "wolf",        if isempty(k), k =  0.5;  end
+    case "nick",        if isempty(k), k = -0.1;  end
+    case "phansalkar",  if isempty(k), k =  0.25; end
     otherwise
-        error("unknown method.");
+        error('localThresholdFast:unknownMethod', ...
+              'Unknown method "%s".', method);
 end
 
-pad = floor(win/2);
-Ipad = padarray(Iin,[pad pad],'symmetric','both');
-kernel = ones(win,win,prec) / (win*win);
+pad    = floor(win/2);
+Ipad   = padarray(Iin, [pad pad], 'symmetric', 'both');
+kernel = ones(win, win, prec) / (win*win);
 
-localMean = conv2(Ipad, kernel, 'valid');
+localMean   = conv2(Ipad, kernel, 'valid');
 localMeanSq = conv2(Ipad.^2, kernel, 'valid');
-localVar = localMeanSq - localMean.^2;
+localVar    = localMeanSq - localMean.^2;
 localVar(localVar < 0) = 0;
 localStd = sqrt(localVar);
-
-minI = min(Iin(:));
 
 switch method
     case "niblack"
@@ -191,6 +228,7 @@ switch method
         Tlocal = localMean .* (1 + k .* ((localStd ./ R) - 1));
 
     case "wolf"
+        minI   = min(Iin(:));
         Tlocal = localMean + k .* (((localStd ./ R) - 1) .* (localMean - minI));
 
     case "nick"
@@ -203,12 +241,8 @@ end
 
 BW = Iin >= Tlocal;
 
-if invert
-    BW = ~BW;
-end
+if invert, BW = ~BW; end
 
-if nargout > 1
-    T = Tlocal;
-end
+if nargout > 1, T = Tlocal; end
 
 end
