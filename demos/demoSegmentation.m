@@ -9,19 +9,23 @@
 %   localThresholdFast    — sauvola, bernsen, bradley, niblack
 %   watershedSegment      — distance, gradient, marker
 %
-% PIPELINE — Real mitochondrial image (Figs 4-6)
-%   Load mitImage.mat from BlobFilters demos (set blobFiltersPath below).
-%   Enhancement: rodGranulometryEnhance if BlobFilters is on path;
-%                otherwise use the raw image directly.
-%   localThresholdFast / watershedSegment applied to enhancement map.
+% PIPELINE — Real mitochondrial image (Figs 4-7)
+%   Load mitImage.mat from BlobFilters demos (set blobImagePath below).
+%   Preprocessing : orientedGaussSmooth  → Ism  (if BlobFilters available)
+%   Enhancers (on Ism): logEnhance | fiberEnhance | capsuleEnhance(DoC)
+%                       | rodGranulometryEnhance
+%   Cellpose (on raw):  cellposeEnhance  → binary mask + label image
+%   Segmentation: marker-controlled watershedSegment on each enhancement map.
+%   Comparison: watershed labels from each enhancer vs Cellpose labels.
 %
 % FIGURES PRODUCED
 %   Fig 1 — Synthetic: thresholding  (Raw | Sauvola | Bernsen | Bradley | Niblack)
 %   Fig 2 — Synthetic: watershed     (Raw | Sauvola mask | Dist | Grad | Marker)
 %   Fig 3 — Synthetic: zoom on marker-WS
-%   Fig 4 — Real:      thresholding  (enhancement map | Sauvola | Bernsen | Bradley | Niblack)
-%   Fig 5 — Real:      watershed     (Raw | enhancement | Dist | Grad | Marker)
-%   Fig 6 — Real:      zoom on marker-WS
+%   Fig 4 — Real:      enhancement maps  (Raw | log | fib | cap | rod | CP mask | CP labels)
+%   Fig 5 — Real:      watershed vs CP   (Raw | log-WS | fib-WS | cap-WS | rod-WS | CP labels)
+%   Fig 6 — Real:      zoom cluster 1    (same 6 columns as Fig 5)
+%   Fig 7 — Real:      zoom cluster 2    (same 6 columns as Fig 5)
 %
 % REQUIREMENTS
 %   localThresholdFast.m and watershedSegment.m (added automatically).
@@ -78,22 +82,10 @@ pWS_dist_s  = struct('method','distance', 'threshold',0.35, 'hMinima',1.5,  'min
 pWS_grad_s  = struct('method','gradient', 'threshold',0.35, 'smoothSigma',1.5, 'hMinima',0.03, 'minArea',20);
 pWS_mark_s  = struct('method','marker',   'threshold',0.35, 'smoothSigma',1.5, 'hMinima',0.05, 'minArea',20);
 
-% --- localThresholdFast (real mito image, objects ~8-12 px) ---------------
-win_r = 31;
-
-pSauv_r.windowsize = win_r; pSauv_r.k = 0.30; pSauv_r.r = 0.5;
-pBern_r.windowsize = win_r; pBern_r.contrast = 0.05;
-pBrad_r.windowsize = win_r; pBrad_r.k = 0.12;
-pNibl_r.windowsize = win_r; pNibl_r.k = -0.15;
-
-pWS_dist_r  = struct('method','distance', 'threshold',0.30, 'hMinima',2.0,  'minArea',50);
-pWS_grad_r  = struct('method','gradient', 'threshold',0.30, 'smoothSigma',1.5, 'hMinima',0.04, 'minArea',50);
-pWS_mark_r  = struct('method','marker',   'threshold',0.30, 'smoothSigma',1.5, 'hMinima',0.05, 'minArea',50);
-
-% --- rodGranulometryEnhance (real image only) ----------------------------
-pRod.lengths      = [8 12 16 20 28 36];
-pRod.orientations = 8;
-pRod.normalize    = true;
+% --- watershedSegment (real mito, marker method — applied to all enhancers)
+% A single consistent parameter set keeps the comparison fair.
+pWS_r = struct('method','marker', 'threshold',0.30, ...
+               'smoothSigma',1.5, 'hMinima',0.05, 'minArea',50);
 
 % =========================================================================
 % =========================================================================
@@ -207,134 +199,190 @@ fprintf('\n=== PART B: Real mitochondrial image ===\n');
 % -------------------------------------------------------------------------
 % B1.  Load real image
 % -------------------------------------------------------------------------
-% Try mitImage.mat first (uint16 variable I), then Ireal.png.
 mitoMatPath = fullfile(blobImagePath, 'mitImage.mat');
 mitoImgPath = fullfile(blobImagePath, 'Ireal.png');
 
-if ~isempty(blobFiltersPath) && exist(mitoMatPath, 'file')
+if ~isempty(blobImagePath) && exist(mitoMatPath, 'file')
     fprintf('Loading mitImage.mat...\n');
     tmp   = load(mitoMatPath, 'I');
     Ireal = im2single(tmp.I);
-elseif ~isempty(blobFiltersPath) && exist(mitoImgPath, 'file')
+elseif ~isempty(blobImagePath) && exist(mitoImgPath, 'file')
     fprintf('Loading Ireal.png...\n');
     Ireal = im2single(imread(mitoImgPath));
-    if size(Ireal,3) > 1
-        Ireal = rgb2gray(Ireal);
-    end
+    if size(Ireal,3) > 1, Ireal = rgb2gray(Ireal); end
 else
     fprintf('  Real image not found at:\n    %s\n    %s\n', mitoMatPath, mitoImgPath);
     fprintf('  Check blobImagePath at the top of this script.\n');
     fprintf('\nDone. 3 figures generated (synthetic only).\n');
     return
 end
-
 fprintf('  Size: %d x %d px\n', size(Ireal,2), size(Ireal,1));
 
 % -------------------------------------------------------------------------
-% B2.  Enhancement (rodGranulometryEnhance if available, else raw)
+% B2.  BlobFilters enhancer parameters  (same as demoMitoEnhance)
 % -------------------------------------------------------------------------
-if hasBlobFilters
-    fprintf('  rodGranulometryEnhance... '); tic;
-    Renh = rodGranulometryEnhance(Ireal, pRod);
+pOGS.sigmaAlong   = 4;    pOGS.sigmaAcross  = 1.5;
+pOGS.orientations = 8;    pOGS.sigmaGrad    = 1.5;  pOGS.sigmaInt = 5;
+
+pLog.sigmas    = [2 3 4 5 6];   pLog.normalize = true;
+
+pFib.widths    = [6 7 8 9 10];  pFib.multimode = 'stack';  pFib.normalize = true;
+
+pCap.lengths      = [12 16 20 28 36 40];  pCap.width      = 8;
+pCap.wideWidth    = 18;                    pCap.alpha      = 0.55;
+pCap.orientations = 12;                    pCap.mode       = 'doc';
+pCap.normalize    = true;
+
+pRod.lengths      = [8 12 16 20 28 36];   pRod.orientations = 8;
+pRod.normalize    = true;
+
+pCP.model         = 'cyto3';   pCP.diameter      = 10;
+pCP.cellProb      = -2;        pCP.flowThreshold = 0.8;
+
+% -------------------------------------------------------------------------
+% B3.  Preprocessing: OGS smooth
+% -------------------------------------------------------------------------
+if hasBlobFilters && exist('orientedGaussSmooth','file')
+    fprintf('  orientedGaussSmooth... '); tic;
+    Ism = orientedGaussSmooth(Ireal, pOGS);
     fprintf('%.2fs\n', toc);
-    enhTitle = 'RodGran enhancement';
 else
-    fprintf('  BlobFilters not found — using raw image as enhancement map.\n');
-    Renh     = Ireal;
-    enhTitle = 'Raw (no enhancement)';
+    Ism = Ireal;   % fallback: no OGS
 end
 
 % -------------------------------------------------------------------------
-% B3.  Thresholding on real enhancement map
+% B4.  Classical enhancers (on Ism)
 % -------------------------------------------------------------------------
-fprintf('\n--- Thresholding (real) ---\n');
+fprintf('\n--- Classical enhancers (on OGS-smoothed image) ---\n');
 
-fprintf('  sauvola...   '); tic;
-BW_sauv_r = localThresholdFast(Renh, 'method','sauvola', ...
-    'windowsize',pSauv_r.windowsize, 'k',pSauv_r.k, 'r',pSauv_r.r);
-fprintf('%.2fs  (%d px)\n', toc, nnz(BW_sauv_r));
+if hasBlobFilters
+    fprintf('  logEnhance...             '); tic;
+    logR = logEnhance(Ism, pLog);
+    fprintf('%.2fs\n', toc);
 
-fprintf('  bernsen...   '); tic;
-BW_bern_r = localThresholdFast(Renh, 'method','bernsen', ...
-    'windowsize',pBern_r.windowsize, 'contrast',pBern_r.contrast);
-fprintf('%.2fs  (%d px)\n', toc, nnz(BW_bern_r));
+    fprintf('  fiberEnhance...           ');
+    try
+        tic; fibR = fiberEnhance(Ism, pFib); fprintf('%.2fs\n', toc);
+    catch ME
+        fprintf('SKIPPED (%s)\n', ME.message);
+        fibR = zeros(size(Ism), 'single');
+    end
 
-fprintf('  bradley...   '); tic;
-BW_brad_r = localThresholdFast(Renh, 'method','bradley', ...
-    'windowsize',pBrad_r.windowsize, 'k',pBrad_r.k);
-fprintf('%.2fs  (%d px)\n', toc, nnz(BW_brad_r));
+    fprintf('  capsuleEnhance (DoC)...   '); tic;
+    capR = capsuleEnhance(Ism, pCap);
+    fprintf('%.2fs\n', toc);
 
-fprintf('  niblack...   '); tic;
-BW_nibl_r = localThresholdFast(Renh, 'method','niblack', ...
-    'windowsize',pNibl_r.windowsize, 'k',pNibl_r.k);
-fprintf('%.2fs  (%d px)\n', toc, nnz(BW_nibl_r));
-
-% -------------------------------------------------------------------------
-% B4.  Watershed on real enhancement map
-% -------------------------------------------------------------------------
-fprintf('\n--- Watershed (real) ---\n');
-
-fprintf('  distance...  '); tic;
-[~, L_dist_r] = watershedSegment(Renh, 'method',pWS_dist_r.method, ...
-    'threshold',pWS_dist_r.threshold, 'hMinima',pWS_dist_r.hMinima, ...
-    'minArea',pWS_dist_r.minArea);
-fprintf('%.2fs  (%d objects)\n', toc, max(L_dist_r(:)));
-
-fprintf('  gradient...  '); tic;
-[~, L_grad_r] = watershedSegment(Renh, 'method',pWS_grad_r.method, ...
-    'threshold',pWS_grad_r.threshold, 'smoothSigma',pWS_grad_r.smoothSigma, ...
-    'hMinima',pWS_grad_r.hMinima, 'minArea',pWS_grad_r.minArea);
-fprintf('%.2fs  (%d objects)\n', toc, max(L_grad_r(:)));
-
-fprintf('  marker...    '); tic;
-[~, L_mark_r] = watershedSegment(Renh, 'method',pWS_mark_r.method, ...
-    'threshold',pWS_mark_r.threshold, 'smoothSigma',pWS_mark_r.smoothSigma, ...
-    'hMinima',pWS_mark_r.hMinima, 'minArea',pWS_mark_r.minArea);
-fprintf('%.2fs  (%d objects)\n', toc, max(L_mark_r(:)));
+    fprintf('  rodGranulometryEnhance... '); tic;
+    rodR = rodGranulometryEnhance(Ism, pRod);
+    fprintf('%.2fs\n', toc);
+else
+    fprintf('  BlobFilters not found — using raw image for all enhancer slots.\n');
+    logR = Ireal;  fibR = Ireal;  capR = Ireal;  rodR = Ireal;
+end
 
 % -------------------------------------------------------------------------
-% B5.  Figures 4-6 — real image
+% B5.  Cellpose (on raw image)
 % -------------------------------------------------------------------------
-rgb_sauv_r = maskRGB(BW_sauv_r);
-rgb_dist_r = labelRGB(L_dist_r);
-rgb_grad_r = labelRGB(L_grad_r);
-rgb_mark_r = labelRGB(L_mark_r);
+fprintf('\n--- Cellpose ---\n');
+hasCellpose = exist('cellpose','file') ~= 0;
+if hasCellpose
+    fprintf('  cellposeEnhance... ');
+    try
+        tic;
+        [cpMask, cpL] = cellposeEnhance(Ireal, pCP);
+        fprintf('%.2fs  (%d objects)\n', toc, max(cpL(:)));
+    catch ME
+        fprintf('SKIPPED (%s)\n', ME.message);
+        cpMask = zeros(size(Ireal),'single');
+        cpL    = zeros(size(Ireal),'uint16');
+        hasCellpose = false;
+    end
+else
+    fprintf('  SKIPPED (Cellpose add-on not installed)\n');
+    cpMask = zeros(size(Ireal),'single');
+    cpL    = zeros(size(Ireal),'uint16');
+end
 
+% -------------------------------------------------------------------------
+% B6.  Marker watershed on each enhancement map
+%      Single consistent parameter set — keeps the comparison fair.
+% -------------------------------------------------------------------------
+fprintf('\n--- Marker watershed on each enhancement map ---\n');
+
+runWS = @(R) watershedSegment(R, 'method',pWS_r.method, ...
+    'threshold',pWS_r.threshold, 'smoothSigma',pWS_r.smoothSigma, ...
+    'hMinima',pWS_r.hMinima, 'minArea',pWS_r.minArea);
+
+fprintf('  log-WS...   '); tic; [~, L_log] = runWS(logR); fprintf('%.2fs  (%d objects)\n', toc, max(L_log(:)));
+fprintf('  fib-WS...   '); tic; [~, L_fib] = runWS(fibR); fprintf('%.2fs  (%d objects)\n', toc, max(L_fib(:)));
+fprintf('  cap-WS...   '); tic; [~, L_cap] = runWS(capR); fprintf('%.2fs  (%d objects)\n', toc, max(L_cap(:)));
+fprintf('  rod-WS...   '); tic; [~, L_rod] = runWS(rodR); fprintf('%.2fs  (%d objects)\n', toc, max(L_rod(:)));
+
+% -------------------------------------------------------------------------
+% B7.  Colour overlays
+% -------------------------------------------------------------------------
+rgb_log = labelRGB(L_log);
+rgb_fib = labelRGB(L_fib);
+rgb_cap = labelRGB(L_cap);
+rgb_rod = labelRGB(L_rod);
+rgb_cpL = labelRGB(cpL);
+
+n_cp  = max(cpL(:));
+n_log = max(L_log(:));  n_fib = max(L_fib(:));
+n_cap = max(L_cap(:));  n_rod = max(L_rod(:));
+
+% Shared panel titles / colormaps for Figs 5-7
+wsTitles = {'Raw', ...
+    sprintf('log-WS  (n=%d)',  n_log), ...
+    sprintf('fib-WS  (n=%d)',  n_fib), ...
+    sprintf('cap-WS  (n=%d)',  n_cap), ...
+    sprintf('rod-WS  (n=%d)',  n_rod), ...
+    sprintf('Cellpose (n=%d)', n_cp)};
+wsCmaps  = {'gray',[],[],[],[],[]};
+
+% -------------------------------------------------------------------------
+% B8.  Figures 4-7
+% -------------------------------------------------------------------------
+
+% Fig 4 — enhancement maps
 figure(4);
-set(gcf,'Name','Real — Thresholding','NumberTitle','off', ...
-        'Color','k','Position',[30 680 1400 300]);
-segFillFigure(4, {Renh, single(BW_sauv_r), single(BW_bern_r), ...
-                  single(BW_brad_r), single(BW_nibl_r)}, ...
-    sprintf('Thresholding methods — real mito (%s)', enhTitle), ...
-    {enhTitle,'Sauvola','Bernsen','Bradley','Niblack'}, ...
-    {'hot','gray','gray','gray','gray'});
+set(gcf,'Name','Real — Enhancement maps','NumberTitle','off', ...
+        'Color','k','Position',[30 680 1820 300]);
+segFillFigure(4, {Ireal, logR, fibR, capR, rodR, cpMask, rgb_cpL}, ...
+    'Enhancement maps — real mitochondria', ...
+    {'Raw','log','fib','cap (DoC)','rodGran', ...
+     sprintf('CP mask (n=%d)',n_cp), sprintf('CP labels (n=%d)',n_cp)}, ...
+    {'gray','hot','hot','hot','hot','hot',[]});
 
+% Fig 5 — watershed vs Cellpose, full FOV
 figure(5);
-set(gcf,'Name','Real — Watershed','NumberTitle','off', ...
-        'Color','k','Position',[30 380 1400 300]);
-segFillFigure(5, {Ireal, Renh, rgb_dist_r, rgb_grad_r, rgb_mark_r}, ...
-    sprintf('Watershed methods — real mito (%s)', enhTitle), ...
-    {'Raw', enhTitle, ...
-     sprintf('Distance-WS (n=%d)', max(L_dist_r(:))), ...
-     sprintf('Gradient-WS (n=%d)', max(L_grad_r(:))), ...
-     sprintf('Marker-WS   (n=%d)', max(L_mark_r(:)))}, ...
-    {'gray','hot',[],[],[]});
+set(gcf,'Name','Real — Watershed vs Cellpose (full FOV)','NumberTitle','off', ...
+        'Color','k','Position',[30 380 1820 300]);
+segFillFigure(5, {Ireal, rgb_log, rgb_fib, rgb_cap, rgb_rod, rgb_cpL}, ...
+    'Marker watershed on each enhancer vs Cellpose — full FOV', ...
+    wsTitles, wsCmaps);
 
+% Fig 6 — zoom cluster 1
 figure(6);
-set(gcf,'Name','Real — Zoom marker-WS','NumberTitle','off', ...
-        'Color','k','Position',[30 60 1400 320]);
+set(gcf,'Name','Real — Zoom cluster 1','NumberTitle','off', ...
+        'Color','k','Position',[30 60 1820 300]);
 segFillFigure(6, ...
-    {imcrop(Ireal,roi_real1), imcrop(Renh,roi_real1), ...
-     imcrop(rgb_sauv_r,roi_real1), imcrop(rgb_mark_r,roi_real1), ...
-     imcrop(Ireal,roi_real2), imcrop(Renh,roi_real2), ...
-     imcrop(rgb_sauv_r,roi_real2), imcrop(rgb_mark_r,roi_real2)}, ...
-    sprintf('Zoom clusters — marker-WS  (n_total=%d)  |  roi1 (left) / roi2 (right)', ...
-            max(L_mark_r(:))), ...
-    {'Raw roi1',sprintf('%s roi1',enhTitle),'Sauvola roi1','Marker-WS roi1', ...
-     'Raw roi2',sprintf('%s roi2',enhTitle),'Sauvola roi2','Marker-WS roi2'}, ...
-    {'gray','hot',[],[],'gray','hot',[],[]});
+    {imcrop(Ireal,roi_real1), imcrop(rgb_log,roi_real1), imcrop(rgb_fib,roi_real1), ...
+     imcrop(rgb_cap,roi_real1), imcrop(rgb_rod,roi_real1), imcrop(rgb_cpL,roi_real1)}, ...
+    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d px]', roi_real1(1),roi_real1(2),roi_real1(3),roi_real1(4)), ...
+    wsTitles, wsCmaps);
 
-fprintf('\nDone. 6 figures generated.\n');
+% Fig 7 — zoom cluster 2
+figure(7);
+set(gcf,'Name','Real — Zoom cluster 2','NumberTitle','off', ...
+        'Color','k','Position',[30 0 1820 300]);
+segFillFigure(7, ...
+    {imcrop(Ireal,roi_real2), imcrop(rgb_log,roi_real2), imcrop(rgb_fib,roi_real2), ...
+     imcrop(rgb_cap,roi_real2), imcrop(rgb_rod,roi_real2), imcrop(rgb_cpL,roi_real2)}, ...
+    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d px]', roi_real2(1),roi_real2(2),roi_real2(3),roi_real2(4)), ...
+    wsTitles, wsCmaps);
+
+fprintf('\nDone. 7 figures generated.\n');
 
 
 % =========================================================================
