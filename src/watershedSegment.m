@@ -17,7 +17,17 @@ function [BW, L] = watershedSegment(I, varargin)
 %                     'gradient' — gradient-magnitude watershed
 %                     'marker'   — marker-controlled watershed (default)
 %   'threshold'   : foreground binarisation level in [0,1] (default 0.5)
-%                   Used to obtain an initial binary mask in all methods.
+%                   Acts as the HIGH threshold when 'threshLow' is also set.
+%   'threshLow'   : lower threshold for two-pass hysteresis binarisation
+%                   (default [], disabled).  When set, only the initial
+%                   foreground mask is affected: pixels above 'threshold'
+%                   unconditionally seed the foreground; pixels between
+%                   'threshLow' and 'threshold' are included only if they
+%                   belong to the same connected component as at least one
+%                   high-threshold pixel.  Useful on enhancement maps with
+%                   gradual boundaries (fiberEnhance, rodGranulometryEnhance)
+%                   where a single low threshold over-segments and a single
+%                   high threshold clips object edges.
 %   'smoothSigma' : sigma of Gaussian pre-smoothing applied before
 %                   gradient or distance computation (default 1.0)
 %   'hMinima'     : h-minima suppression depth; controls over-segmentation
@@ -147,6 +157,7 @@ p = inputParser;
 addRequired(p, 'I', @(x) isnumeric(x) && ismatrix(x));
 addParameter(p, 'method',      'marker');
 addParameter(p, 'threshold',   0.5);
+addParameter(p, 'threshLow',   []);
 addParameter(p, 'smoothSigma', 1.0);
 addParameter(p, 'hMinima',     []);    % set per-method below if empty
 addParameter(p, 'minArea',     10);
@@ -156,6 +167,7 @@ parse(p, I, varargin{:});
 
 method      = lower(string(p.Results.method));
 thresh      = p.Results.threshold;
+threshLow   = p.Results.threshLow;
 sigma       = p.Results.smoothSigma;
 hMin        = p.Results.hMinima;
 minArea     = p.Results.minArea;
@@ -170,7 +182,7 @@ I = im2single(I);
 if method == "distance"
     if isempty(hMin), hMin = 1.0; end
 
-    BW0  = I > thresh;
+    BW0  = applyThreshold(I, thresh, threshLow);
     BW0  = imopen(BW0, strel('disk', 1));   % remove isolated noise pixels
 
     D    = bwdist(~BW0);
@@ -198,7 +210,7 @@ if method == "gradient"
     Lraw = watershed(Gsup);
 
     % Mask to foreground if threshold is provided (> 0)
-    BW0  = I > thresh;
+    BW0  = applyThreshold(I, thresh, threshLow);
     Lraw(~BW0) = 0;
     Lraw(Lraw == 0 & BW0) = 0;            % watershed ridges inside fg → bg
 
@@ -216,7 +228,7 @@ if method == "marker"
     if isempty(hMin), hMin = 0.02; end
 
     Ism = imgaussfilt(I, sigma);
-    BW0 = I > thresh;
+    BW0 = applyThreshold(I, thresh, threshLow);
     BW0 = imopen(BW0, strel('disk', 1));   % clean up binary mask
 
     % --- foreground seeds: extended maxima restricted to foreground ------
@@ -250,4 +262,29 @@ error('watershedSegment:unknownMethod', ...
       'Unknown method "%s". Choose ''distance'', ''gradient'', or ''marker''.', ...
       method);
 
+end
+
+
+function BW0 = applyThreshold(I, thresh, threshLow)
+% applyThreshold  Binarise I with optional hysteresis.
+%   Single-threshold:  BW0 = I > thresh  (when threshLow is empty).
+%   Hysteresis:        seed pixels with I > thresh; grow into connected
+%                      weak pixels (I > threshLow) by connected-component
+%                      propagation.
+if isempty(threshLow)
+    BW0 = I > thresh;
+else
+    BW_strong = I > thresh;
+    BW_weak   = I > threshLow;
+    % Label weak-threshold connected components
+    Lw = uint16(bwlabeln(BW_weak));
+    % Keep components that contain at least one strong-threshold pixel
+    keepIds = unique(Lw(BW_strong));
+    keepIds(keepIds == 0) = [];
+    if isempty(keepIds)
+        BW0 = false(size(I));
+    else
+        BW0 = ismember(Lw, keepIds);
+    end
+end
 end

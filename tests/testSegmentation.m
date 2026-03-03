@@ -11,7 +11,7 @@ classdef testSegmentation < matlab.unittest.TestCase
 %
 % COVERAGE
 %   localThresholdFast  — 10 tests
-%   watershedSegment    — 13 tests
+%   watershedSegment    — 16 tests
 %   refineSegment       — 13 tests
 %
 % REQUIREMENTS
@@ -254,6 +254,34 @@ classdef testSegmentation < matlab.unittest.TestCase
                 @() watershedSegment(testSegmentation.blobImage(), ...
                                      'method', 'frobnicator'), ...
                 'watershedSegment:unknownMethod');
+        end
+
+        function testWS_hysteresis_smoke(tc)
+            % Hysteresis mode must run without error and return correct types.
+            I = testSegmentation.blobImage();
+            [BW, L] = watershedSegment(I, 'threshold', 0.5, 'threshLow', 0.2);
+            tc.verifyClass(BW, 'single');
+            tc.verifyClass(L,  'uint16');
+        end
+
+        function testWS_hysteresis_detectsBlob(tc)
+            % With a weak lo-threshold that includes the blob edge and a
+            % strong hi-threshold that anchors the core, hysteresis must
+            % still detect at least one object.
+            I = testSegmentation.blobImage();
+            [~, L] = watershedSegment(I, 'method', 'marker', ...
+                                         'threshold', 0.4, ...
+                                         'threshLow', 0.15);
+            tc.verifyGreaterThanOrEqual(max(L(:)), uint16(1));
+        end
+
+        function testWS_hysteresis_noAnchor_givesEmpty(tc)
+            % If no pixel exceeds the high threshold, hysteresis has no
+            % anchor and must return an empty mask.
+            I = testSegmentation.blobImage() * 0.2;   % scale down: max ~0.2
+            [BW, L] = watershedSegment(I, 'threshold', 0.9, 'threshLow', 0.1);
+            tc.verifyEqual(max(BW(:)), single(0));
+            tc.verifyEqual(max(L(:)),  uint16(0));
         end
 
     end

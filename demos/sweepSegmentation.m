@@ -64,7 +64,7 @@ roi1 = [100  80  220 220];   % zoom cluster 1  [x y w h]
 roi2 = [330 220  220 220];   % zoom cluster 2
 
 % ---- refinement parameters (section 9) ----------------------------------
-refMaxExpand   = 6;     % max boundary expansion, pixels
+% maxExpand is set per-enhancer inside buildTasks() — tune it there.
 refNIter       = 100;   % Chan-Vese AC iterations
 refFgThresh    = 0.10;  % dilate method: minimum raw intensity to accept
 refMinArea     = 20;    % minimum object area after refinement (pixels)
@@ -149,15 +149,21 @@ fprintf('%.1fs\n', toc);
 % =========================================================================
 % 4.  Watershed sweep grid
 % =========================================================================
-thresholds  = [0.20 0.25 0.30 0.35 0.40];
-hMinimaVals = [0.02 0.05 0.10];
-minAreaVals = [20 50];
+thresholds    = [0.20 0.25 0.30 0.35 0.40];
+hMinimaVals   = [0.02 0.05 0.10];
+minAreaVals   = [20 50];
+threshLowVals = {[], 0.10, 0.15};   % [] = single-threshold; values = hysteresis low
 
 wsGrid = {};
 for thr = thresholds
     for hm = hMinimaVals
         for ma = minAreaVals
-            wsGrid{end+1} = struct('threshold',thr,'hMinima',hm,'minArea',ma); %#ok<SAGROW>
+            for tli = 1:numel(threshLowVals)
+                tl = threshLowVals{tli};
+                if ~isempty(tl) && tl >= thr, continue; end   % low must be < high
+                wsGrid{end+1} = struct('threshold',thr,'hMinima',hm, ...
+                                       'minArea',ma,'threshLow',tl); %#ok<SAGROW>
+            end
         end
     end
 end
@@ -185,16 +191,25 @@ fprintf('\n=== Parameter sweep (%d enhancer configs x %d WS combos) ===\n', ...
 results    = cell(nTasks, 1);   % best result struct per task
 bestLabels = cell(nTasks, 1);   % best label image per task
 bestEnhMap = cell(nTasks, 1);   % best enhancement map per task
+resultsHyst = cell(nTasks, 1);  % best hysteresis-only result per task
+labelsHyst  = cell(nTasks, 1);  % best hysteresis label image per task
+resultsStd  = cell(nTasks, 1);  % best standard-threshold result per task
+labelsStd   = cell(nTasks, 1);  % best standard-threshold label image per task
 
 for ti = 1:nTasks
     tk = tasks{ti};
     fprintf('\n--- %s (%d configs x %d WS = %d evals) ---\n', ...
             tk.name, numel(tk.cfgs), nWS, numel(tk.cfgs)*nWS);
 
-    best = struct('f1',0,'prec',0,'rec',0,'iou',0, ...
-                  'enhIdx',1,'wsIdx',1,'enhDesc','','wsDesc','');
-    bestL = zeros(size(Ireal), 'uint16');
-    bestR = zeros(size(Ireal), 'single');
+    emptyRes = struct('f1',0,'prec',0,'rec',0,'iou',0, ...
+                      'enhIdx',1,'wsIdx',1,'enhDesc','','wsDesc','');
+    best     = emptyRes;
+    bestHyst = emptyRes;
+    bestStd  = emptyRes;
+    bestL     = zeros(size(Ireal), 'uint16');
+    bestR     = zeros(size(Ireal), 'single');
+    bestHystL = zeros(size(Ireal), 'uint16');
+    bestStdL  = zeros(size(Ireal), 'uint16');
 
     for ci = 1:numel(tk.cfgs)
         fprintf('  Config %d/%d: %s\n    Computing enhancement... ', ...
@@ -216,6 +231,7 @@ for ti = 1:nTasks
                 [BW, L] = watershedSegment(R, ...
                     'method',      'marker', ...
                     'threshold',   ws.threshold, ...
+                    'threshLow',   ws.threshLow, ...
                     'smoothSigma', 1.5, ...
                     'hMinima',     ws.hMinima, ...
                     'minArea',     ws.minArea);
@@ -225,25 +241,33 @@ for ti = 1:nTasks
 
             [f1, prec, rec, iou] = evalBinary(BW, cpBW);
 
+            newRes = struct('f1',f1,'prec',prec,'rec',rec,'iou',iou, ...
+                            'enhIdx',ci,'wsIdx',wi, ...
+                            'enhDesc',tk.cfgDescs{ci},'wsDesc',wsDesc(ws));
             if f1 > best.f1
-                best.f1      = f1;
-                best.prec    = prec;
-                best.rec     = rec;
-                best.iou     = iou;
-                best.enhIdx  = ci;
-                best.wsIdx   = wi;
-                best.enhDesc = tk.cfgDescs{ci};
-                best.wsDesc  = wsDesc(ws);
-                bestL        = L;
-                bestR        = R;
+                best  = newRes;
+                bestL = L;
+                bestR = R;
+            end
+            if isempty(ws.threshLow) && f1 > bestStd.f1
+                bestStd  = newRes;
+                bestStdL = L;
+            end
+            if ~isempty(ws.threshLow) && f1 > bestHyst.f1
+                bestHyst  = newRes;
+                bestHystL = L;
             end
         end
         fprintf('done (%.1fs)\n', toc(t0));
     end
 
-    results{ti}    = best;
-    bestLabels{ti} = bestL;
-    bestEnhMap{ti} = bestR;
+    results{ti}     = best;
+    bestLabels{ti}  = bestL;
+    bestEnhMap{ti}  = bestR;
+    resultsHyst{ti} = bestHyst;
+    labelsHyst{ti}  = bestHystL;
+    resultsStd{ti}  = bestStd;
+    labelsStd{ti}   = bestStdL;
 
     fprintf('  >> Best F1=%.4f  Prec=%.4f  Rec=%.4f  IoU=%.4f\n', ...
             best.f1, best.prec, best.rec, best.iou);
@@ -295,11 +319,55 @@ segFillFigure(3, cellfun(@(p) imcrop(p,roi2), panels, 'UniformOutput',false), ..
 fprintf('\nDone. 3 figures generated.\n');
 
 % =========================================================================
+% 8b.  Hysteresis vs standard comparison
+% =========================================================================
+fprintf('\n');
+printHystTable(tasks, resultsStd, resultsHyst, nCP);
+
+% Figures 7-9: best hysteresis result per enhancer (parallel to Figs 1-3)
+panelTitlesH = {'Raw'};
+for ti = 1:nTasks
+    if resultsHyst{ti}.f1 > 0
+        lbl = sprintf('%s\nF1=%.3f n=%d', tasks{ti}.tag, ...
+                      resultsHyst{ti}.f1, max(labelsHyst{ti}(:)));
+    else
+        lbl = sprintf('%s\n(no hyst result)', tasks{ti}.tag);
+    end
+    panelTitlesH{end+1} = lbl; %#ok<SAGROW>
+end
+panelTitlesH{end+1} = sprintf('Cellpose GT\n(n=%d)', nCP);
+panelCmapsH = [{'gray'}, repmat({[]}, 1, nTasks), {[]}];
+panelsH = [{Ireal}, cellfun(@labelRGB, labelsHyst(:)', 'UniformOutput', false), {cpRGB}];
+
+figure(7);
+set(gcf,'Name','Best hysteresis result per enhancer — full FOV','NumberTitle','off', ...
+        'Color','k','Position',[30 680 1820 340]);
+segFillFigure(7, panelsH, ...
+    sprintf('Best hysteresis-WS per enhancer vs Cellpose GT (n=%d) — full FOV', nCP), ...
+    panelTitlesH, panelCmapsH);
+
+figure(8);
+set(gcf,'Name','Best hysteresis result per enhancer — zoom 1','NumberTitle','off', ...
+        'Color','k','Position',[30 340 1820 340]);
+segFillFigure(8, cellfun(@(p) imcrop(p,roi1), panelsH, 'UniformOutput',false), ...
+    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d]', roi1(1),roi1(2),roi1(3),roi1(4)), ...
+    panelTitlesH, panelCmapsH);
+
+figure(9);
+set(gcf,'Name','Best hysteresis result per enhancer — zoom 2','NumberTitle','off', ...
+        'Color','k','Position',[30 0 1820 340]);
+segFillFigure(9, cellfun(@(p) imcrop(p,roi2), panelsH, 'UniformOutput',false), ...
+    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d]', roi2(1),roi2(2),roi2(3),roi2(4)), ...
+    panelTitlesH, panelCmapsH);
+
+fprintf('Hysteresis figures done. Figs 7-9 generated.\n');
+
+% =========================================================================
 % 9.  Boundary refinement: apply refineSegment to each best WS result
 % =========================================================================
 fprintf('\n=== Boundary refinement ===\n');
-fprintf('    maxExpand=%d px  |  chanvese: nIter=%d  |  dilate: fgThr=%.2f\n', ...
-        refMaxExpand, refNIter, refFgThresh);
+fprintf('    maxExpand: per-enhancer (see buildTasks)  |  chanvese: nIter=%d  |  dilate: fgThr=%.2f\n', ...
+        refNIter, refFgThresh);
 
 refMethods   = {'chanvese', 'dilate'};
 nRefMethods  = numel(refMethods);
@@ -315,7 +383,7 @@ for ti = 1:nTasks
         try
             [BW_r, L_r] = refineSegment(Ireal, L_ws, ...
                 'method',      mName, ...
-                'maxExpand',   refMaxExpand, ...
+                'maxExpand',   tasks{ti}.maxExpand, ...
                 'nIter',       refNIter, ...
                 'fgThreshold', refFgThresh, ...
                 'minArea',     refMinArea);
@@ -417,6 +485,7 @@ t.cfgDescs = {
     'sigmas=[2 3 4 5 6]',
     'sigmas=[3 4 5 6 7]'
 };
+t.maxExpand = 4;   % LoG blobs are compact; conservative expansion
 tasks{end+1} = t;
 
 % --- fiberEnhance ---------------------------------------------------------
@@ -432,6 +501,7 @@ t.cfgDescs = {
     'widths=[6 7 8 9 10]',
     'widths=[8 9 10 12]'
 };
+t.maxExpand = 7;   % fiber boundaries fade gradually; allow more expansion
 tasks{end+1} = t;
 
 % --- capsuleEnhance single ------------------------------------------------
@@ -447,6 +517,7 @@ t.cfgDescs = {
     'lens=[12 16 20] w=8 or=8',
     'lens=[12 16 20 28] w=8 or=8'
 };
+t.maxExpand = 5;   % capsule width sets the scale; moderate expansion
 tasks{end+1} = t;
 
 % --- capsuleEnhance DoC ---------------------------------------------------
@@ -462,6 +533,7 @@ t.cfgDescs = {
     'lens=[12..28] w=8 wW=18 or=8',
     'lens=[12..40] w=8 wW=18 or=8'
 };
+t.maxExpand = 5;   % DoC suppresses background well; same scale as single
 tasks{end+1} = t;
 
 % --- rodGranulometryEnhance -----------------------------------------------
@@ -477,7 +549,38 @@ t.cfgDescs = {
     'lens=[8 12 16 20] or=8',
     'lens=[8 12 16 20 28 36] or=8'
 };
+t.maxExpand = 8;   % rod halos are diffuse; allow largest expansion
 tasks{end+1} = t;
+end
+
+
+function printHystTable(tasks, resultsStd, resultsHyst, nCP)
+% printHystTable  Print standard vs hysteresis best-F1 comparison per enhancer.
+nT = numel(tasks);
+
+w1  = 16;
+sep = repmat('=', 1, w1 + 60);
+fprintf('%s\n', sep);
+fprintf('HYSTERESIS vs STANDARD THRESHOLD — best F1 per enhancer (Cellpose GT n=%d)\n', nCP);
+fprintf('%s\n', sep);
+fprintf(' %-*s  %8s  %8s  %8s  %s\n', w1, 'Enhancer', 'Std F1', 'Hyst F1', 'Delta', 'Best hyst params');
+fprintf(' %s\n', repmat('-', 1, numel(sep)-1));
+for ti = 1:nT
+    rs = resultsStd{ti};
+    rh = resultsHyst{ti};
+    if rh.f1 > 0
+        dF1 = rh.f1 - rs.f1;
+        sign_str = '+';
+        if dF1 < 0, sign_str = ''; end
+        fprintf(' %-*s  %8.4f  %8.4f  %s%.4f  %s\n', ...
+                w1, tasks{ti}.name, rs.f1, rh.f1, sign_str, dF1, rh.wsDesc);
+    else
+        fprintf(' %-*s  %8.4f  %8s  %8s  (no hysteresis combos ran)\n', ...
+                w1, tasks{ti}.name, rs.f1, '—', '—');
+    end
+end
+fprintf(' %s\n', repmat('-', 1, numel(sep)-1));
+fprintf('%s\n\n', sep);
 end
 
 
@@ -496,7 +599,12 @@ end
 
 function s = wsDesc(ws)
 % wsDesc  Short string describing a watershed parameter set.
-s = sprintf('thr=%.2f h=%.2f minA=%d', ws.threshold, ws.hMinima, ws.minArea);
+if isempty(ws.threshLow)
+    s = sprintf('thr=%.2f h=%.2f minA=%d', ws.threshold, ws.hMinima, ws.minArea);
+else
+    s = sprintf('thr=%.2f lo=%.2f h=%.2f minA=%d', ...
+                ws.threshold, ws.threshLow, ws.hMinima, ws.minArea);
+end
 end
 
 

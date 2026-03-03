@@ -92,9 +92,11 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %     immediately without computation.
 %   - The 'chanvese' method requires activecontour (Image Processing
 %     Toolbox R2014b+); an error is raised if it is absent.
-%   - Both methods preserve the number of objects (unless objects shrink
-%     below minArea), so refineSegment adjusts boundaries only; it does
-%     not split or merge objects.
+%   - Both methods preserve object identity: adjacent objects are never
+%     merged.  Chan-Vese uses a no-overwrite accumulator and per-label
+%     area filtering; Dilate uses the Voronoi partition directly with
+%     per-label area filtering.  Neither method routes the final label
+%     image through bwconncomp (which would merge touching objects).
 %   - Setting maxExpand = 0 with 'dilate' returns exactly the original
 %     foreground (no expansion).  With 'chanvese' it still runs the AC
 %     (which may contract slightly) but clips the result to the original
@@ -183,6 +185,7 @@ if method == "chanvese"
 
     nLabels  = double(max(L(:)));
     BW_accum = false(imgH, imgW);   % accumulator — earlier objects take priority
+    L_accum  = zeros(imgH, imgW, 'uint16');  % per-pixel label accumulator
 
     % structuring elements reused across objects
     seInit = strel('disk', max(1, round(maxExpand / 2)));
@@ -229,12 +232,26 @@ if method == "chanvese"
         new_pixels = refined_patch & ~BW_accum(row_range, col_range);
         BW_accum(row_range, col_range) = ...
             BW_accum(row_range, col_range) | new_pixels;
+        % Record which label owns each new pixel (preserves boundaries)
+        L_patch = L_accum(row_range, col_range);
+        L_patch(new_pixels) = uint16(k);
+        L_accum(row_range, col_range) = L_patch;
     end
 
     %% clean up and relabel
-    BW_clean = bwareaopen(BW_accum, minArea);
-    L_r  = uint16(labelmatrix(bwconncomp(BW_clean)));
-    BW_r = single(BW_clean);
+    % Remove per-object labels below minArea (per-label check avoids
+    % bwconncomp, which would merge touching objects into one component).
+    for k = 1:nLabels
+        if nnz(L_accum == k) < minArea
+            L_accum(L_accum == k) = 0;
+        end
+    end
+    uL = setdiff(unique(L_accum(:)), uint16(0));
+    L_r = zeros(imgH, imgW, 'uint16');
+    for ki = 1:numel(uL)
+        L_r(L_accum == uL(ki)) = ki;
+    end
+    BW_r = single(L_r > 0);
     return
 end
 
@@ -259,10 +276,19 @@ if method == "dilate"
     L_dilated(~valid) = 0;
 
     %% clean up and relabel
-    BW_clean = bwareaopen(L_dilated > 0, minArea);
-    L_dilated(~BW_clean) = 0;
-    L_r  = uint16(labelmatrix(bwconncomp(BW_clean)));
-    BW_r = single(BW_clean);
+    % Use per-label area filtering rather than bwconncomp, which would
+    % merge adjacent Voronoi cells that share a boundary edge.
+    uL = setdiff(unique(L_dilated(:)), uint16(0));
+    L_r    = zeros(imgH, imgW, 'uint16');
+    ki_out = uint16(0);
+    for ki = 1:numel(uL)
+        mask_k = (L_dilated == uL(ki));
+        if nnz(mask_k) >= minArea
+            ki_out = ki_out + 1;
+            L_r(mask_k) = ki_out;
+        end
+    end
+    BW_r = single(L_r > 0);
     return
 end
 
