@@ -21,7 +21,7 @@
 % CACHING
 %   Cellpose sweep results (Lall, nObjAll, covAll) are cached in the
 %   workspace.  Re-running the script with the same sweep grid but
-%   different rois / display options skips the Cellpose calls entirely.
+%   different display options skips the Cellpose calls entirely.
 %   To force a full rerun, clear the workspace or change any grid
 %   parameter (cpModels, cpVals, ftVals, niVals, cpDiam).
 %
@@ -35,9 +35,9 @@
 % FIGURES (per model × nIter combination)
 %   Fig A — Combined heatmaps: n_objects (left) and coverage % (right).
 %           Rows = cellProb values, Cols = flowThreshold values.
-%   Fig B… — Visual label grid for each entry in rois.
-%             Row per cellProb, column per flowThreshold.
-%             Annotated with n_objects and coverage%.
+%   Fig B — Visual label grid (full image).
+%           Row per cellProb, column per flowThreshold.
+%           Annotated with n_objects and coverage%.
 %
 % CONSOLE
 %   Per (model, nIter): 2-D grid table of n_objects / coverage%.
@@ -51,9 +51,6 @@
 %               Higher = more objects (rougher boundaries).
 %   niVals    — nIter values.  0 = Cellpose default (~200).
 %               2000 recommended for elongated structures (literature).
-%   rois      — cell array of structs with fields:
-%                 .rect  [x y w h]  zoom crop region
-%                 .label string     label for figure titles
 %
 % REQUIREMENTS
 %   cellposeEnhance.m on path (BlobFilters toolbox).
@@ -66,7 +63,7 @@ clc; close all;   % intentionally no 'clear' — workspace cache is preserved
 % CONFIGURATION
 % =========================================================================
 blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src';
-blobImagePath    = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src\.claude\worktrees\thirsty-wescoff\demos';
+blobImagePath    = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\demos';
 
 % ---- Cellpose models and nIter to test ----------------------------------
 % Sweep results (2026-03-03): cyto3 best; bact_fluor_cp3 performed worse;
@@ -81,13 +78,6 @@ cpDiam    = 10;           % expected object diameter in pixels (fixed)
 % For a broad initial survey restore: cpVals=[-4,-3,-2,-1,0,1,2], ftVals=[0.30,0.50,0.80,1.20]
 cpVals = [-2, -1, 0, 1];           % CellThreshold values
 ftVals = [0.60, 0.80, 1.00, 1.20]; % FlowErrorThreshold values
-
-% ---- Zoom regions for visual grid ---------------------------------------
-% Multiple rois are all shown without re-running Cellpose.
-rois = { ...
-    struct('rect', [100  80  220 220], 'label', 'zoom 1'), ...
-    struct('rect', [330 220  220 220], 'label', 'zoom 2  (challenging)'), ...
-};
 
 % =========================================================================
 % Path setup
@@ -122,10 +112,9 @@ cpCacheTagNew = sprintf('%s|ni%s|d%.0f|cp%s|ft%s', ...
     num2str(cpVals,'%.2f '), num2str(ftVals,'%.2f '));
 
 doSweep = true;
-if exist('cpCacheTag','var')           && strcmp(cpCacheTag, cpCacheTagNew) && ...
-   exist('Lall','var')                 && isequal(size(Lall), [nM nNI nCP nFT]) && ...
-   exist('nObjAll','var')              && ...
-   exist('Ireal','var')
+if exist('cpCacheTag','var')  && strcmp(cpCacheTag, cpCacheTagNew) && ...
+   exist('Lall','var')        && isequal(size(Lall), [nM nNI nCP nFT]) && ...
+   exist('nObjAll','var')     && exist('Ireal','var')
     fprintf('=== Using cached sweep results ===\n');
     fprintf('    (grid unchanged — only figures will be regenerated)\n');
     fprintf('    To force a full rerun: clear Lall, or change a grid parameter.\n\n');
@@ -137,27 +126,29 @@ end
 % =========================================================================
 if doSweep
     fprintf('=== Loading image ===\n');
-    mitoMat = fullfile(blobImagePath, 'mitImage.mat');
-    mitoImg = fullfile(blobImagePath, 'Ireal.png');
+    mitoMat = fullfile(blobImagePath, 'mitImagecrop.mat');
 
-    if exist(mitoMat, 'file')
-        tmp   = load(mitoMat, 'I');
-        Ireal = im2single(tmp.I);
-        fprintf('  Loaded mitImage.mat  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
-    elseif exist(mitoImg, 'file')
-        Ireal = im2single(imread(mitoImg));
-        if size(Ireal,3) > 1, Ireal = rgb2gray(Ireal); end
-        fprintf('  Loaded Ireal.png  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
-    else
-        error('sweepCellpose:noImage', 'Image not found.  Check blobImagePath.');
+    if ~exist(mitoMat, 'file')
+        error('sweepCellpose:noImage', ...
+              'mitImagecrop.mat not found in:\n  %s\nCheck blobImagePath.', ...
+              blobImagePath);
     end
+
+    % Load defensively — accept any single 2-D numeric variable in the file
+    tmp = load(mitoMat);
+    flds = fieldnames(tmp);
+    Iraw = tmp.(flds{1});
+    if size(Iraw, 3) > 1, Iraw = rgb2gray(Iraw); end
+    Ireal = im2single(Iraw);
+    fprintf('  Loaded mitImagecrop.mat  (%d x %d px,  var: %s)\n', ...
+            size(Ireal,2), size(Ireal,1), flds{1});
 
     % =====================================================================
     % 2.  Run sweep
     % =====================================================================
-    nObjAll = nan(nM, nNI, nCP, nFT);   % object count per combo
-    covAll  = nan(nM, nNI, nCP, nFT);   % coverage % per combo
-    Lall    = cell(nM, nNI, nCP, nFT);  % label images (uint16)
+    nObjAll = nan(nM, nNI, nCP, nFT);
+    covAll  = nan(nM, nNI, nCP, nFT);
+    Lall    = cell(nM, nNI, nCP, nFT);
 
     nTotal = nM * nNI * nCP * nFT;
     fprintf('\n=== Cellpose parameter sweep  (%d configurations) ===\n', nTotal);
@@ -198,7 +189,7 @@ if doSweep
         end
     end
 
-    cpCacheTag = cpCacheTagNew;   % mark cache as valid
+    cpCacheTag = cpCacheTagNew;
 end  % doSweep
 
 % =========================================================================
@@ -215,9 +206,9 @@ for mi = 1:nM
 end
 
 % =========================================================================
-% 4.  Figures: heatmaps + visual label grids  (always regenerated)
+% 4.  Figures: heatmaps + visual label grid  (always regenerated)
 % =========================================================================
-nRois  = numel(rois);
+[imgH, imgW] = size(Ireal);
 figNum = 0;
 
 for mi = 1:nM
@@ -246,72 +237,66 @@ for mi = 1:nM
         ax2 = nexttile;
         heatmapPanel(ax2, cpVals, ftVals, cov_mn,  'coverage %', 'hot',    '%.1f');
 
-        % ---- Figures B…: one visual label grid per roi ------------------
-        tilePx = 170;  % approximate pixels per tile
-        nCols  = nFT + 1;   % raw column + one per flowThreshold
+        % ---- Figure B: visual label grid (full image) -------------------
+        figNum = figNum + 1;
 
-        for ri = 1:nRois
-            roiRect  = rois{ri}.rect;
-            roiLabel = rois{ri}.label;
+        % Scale tile size to the image aspect ratio so panels aren't distorted
+        nCols   = nFT + 1;          % raw column + one per flowThreshold
+        tileW   = min(280, floor(1760 / nCols));
+        tileH   = round(tileW * imgH / imgW);
+        figW    = tileW * nCols + 80;
+        figH    = min(1050, tileH * nCP  + 80);
 
-            figNum = figNum + 1;
-            figW   = min(1820, tilePx * nCols + 80);
-            figH   = min(1050, tilePx * nCP  + 80);
+        hfb = figure(figNum);
+        set(hfb, 'Name', sprintf('Cellpose labels — %s', mTag), ...
+                 'NumberTitle','off', 'Color','k', ...
+                 'Position', [50 50 figW figH]);
 
-            hfb = figure(figNum);
-            set(hfb, 'Name', sprintf('Labels %s — %s', roiLabel, mTag), ...
-                     'NumberTitle','off', 'Color','k', ...
-                     'Position', [70 + (ri-1)*30, 70 + (ri-1)*20, figW, figH]);
+        tlb = tiledlayout(nCP, nCols, 'TileSpacing','none', 'Padding','tight');
+        title(tlb, sprintf('Labels (full image)  —  %s', mTag), ...
+              'Color','w', 'FontSize',10);
 
-            tlb = tiledlayout(nCP, nCols, 'TileSpacing','none', 'Padding','tight');
-            title(tlb, sprintf('Labels  %s  |  %s', roiLabel, mTag), ...
-                  'Color','w', 'FontSize',10);
+        for ci = 1:nCP
+            % Column 1: raw image annotated with cellProb value
+            ax = nexttile; %#ok<NASGU>
+            imshow(Ireal, []);
+            hold on;
+            text(4, 6, sprintf('cp=%+d', cpVals(ci)), ...
+                 'Color','y', 'FontSize',7, 'FontWeight','bold', ...
+                 'VerticalAlignment','top', 'Interpreter','none');
+            if ci == 1
+                title('Raw', 'Color','w', 'FontSize',7, 'FontWeight','normal');
+            end
+            hold off;
 
-            Izoom = imcrop(Ireal, roiRect);
-
-            for ci = 1:nCP
-                % ---- Column 1: raw image with cellProb label -------------
+            % Columns 2…nFT+1: labelled results
+            for fi = 1:nFT
                 ax = nexttile; %#ok<NASGU>
-                imshow(Izoom, []);
+                Lk = L_mn{ci,fi};
+                if max(Lk(:)) > 0
+                    rgb = label2rgb(Lk, 'hsv', 'k', 'shuffle');
+                else
+                    rgb = zeros(imgH, imgW, 3, 'uint8');
+                end
+                imshow(rgb);
                 hold on;
-                text(4, 6, sprintf('cp=%+d', cpVals(ci)), ...
-                     'Color','y', 'FontSize',7, 'FontWeight','bold', ...
-                     'VerticalAlignment','top', 'Interpreter','none');
+                n_k = nObj_mn(ci,fi);
+                c_k = cov_mn(ci,fi);
+                if ~isnan(n_k)
+                    text(4, 6, sprintf('n=%d  %.0f%%', n_k, c_k), ...
+                         'Color','y', 'FontSize',6, ...
+                         'VerticalAlignment','top', 'Interpreter','none');
+                end
                 if ci == 1
-                    title('Raw', 'Color','w', 'FontSize',7, 'FontWeight','normal');
+                    title(sprintf('ft=%.2f', ftVals(fi)), ...
+                          'Color','w', 'FontSize',7, 'FontWeight','normal');
                 end
                 hold off;
-
-                % ---- Columns 2…: labelled results -----------------------
-                for fi = 1:nFT
-                    ax = nexttile; %#ok<NASGU>
-                    Lk   = L_mn{ci,fi};
-                    Lk_z = imcrop(Lk, roiRect);
-                    if max(Lk_z(:)) > 0
-                        rgb = label2rgb(Lk_z, 'hsv', 'k', 'shuffle');
-                    else
-                        rgb = zeros([size(Lk_z,1), size(Lk_z,2), 3], 'uint8');
-                    end
-                    imshow(rgb);
-                    hold on;
-                    n_k = nObj_mn(ci,fi);
-                    c_k = cov_mn(ci,fi);
-                    if ~isnan(n_k)
-                        text(4, 6, sprintf('n=%d  %.0f%%', n_k, c_k), ...
-                             'Color','y', 'FontSize',6, ...
-                             'VerticalAlignment','top', 'Interpreter','none');
-                    end
-                    if ci == 1
-                        title(sprintf('ft=%.2f', ftVals(fi)), ...
-                              'Color','w', 'FontSize',7, 'FontWeight','normal');
-                    end
-                    hold off;
-                end
             end
-        end  % roi loop
+        end
 
-        fprintf('  Figs %d–%d: heatmap + %d label grids for %s\n', ...
-                figNum - nRois, figNum, nRois, mTag);
+        fprintf('  Figs %d-%d: heatmap + label grid for %s\n', ...
+                figNum-1, figNum, mTag);
     end
 end
 
