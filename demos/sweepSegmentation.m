@@ -34,10 +34,15 @@
 %           Raw | best-WS | +chanvese | +dilate | Cellpose GT
 %   Fig 5 — Refinement comparison — zoom cluster 1
 %   Fig 6 — Refinement comparison — zoom cluster 2
+%   Fig 7 — Hysteresis spotlight — full FOV
+%           Raw | best-std-WS | best-hyst-WS | Cellpose GT
+%   Fig 8 — Hysteresis spotlight — zoom cluster 1
+%   Fig 9 — Hysteresis spotlight — zoom cluster 2
 %
 % CONSOLE OUTPUT
 %   Ranked table of best watershed parameters per enhancer.
 %   Refinement comparison table: WS → chanvese → dilate metrics.
+%   Hysteresis comparison table: std WS vs best hysteresis WS per enhancer.
 %
 % REQUIREMENTS
 %   localThresholdFast.m, watershedSegment.m, refineSegment.m on path.
@@ -47,9 +52,9 @@
 %
 % NOTE ON RUNTIME
 %   Enhancement computation dominates (~2-4 min total).
-%   Watershed sweep (480 calls) adds ~1 min.
+%   Watershed sweep (~1440 calls with hysteresis grid) adds ~2-3 min.
 %   Chan-Vese refinement: ~5-30 s per enhancer depending on object count.
-%   Total: ~5-8 min.  If cpL already exists in the workspace (from
+%   Total: ~8-12 min.  If cpL already exists in the workspace (from
 %   demoSegmentation), Cellpose will not be re-run.
 
 clear; clc; close all;
