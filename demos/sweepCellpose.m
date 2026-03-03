@@ -69,16 +69,18 @@ blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFil
 blobImagePath    = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src\.claude\worktrees\thirsty-wescoff\demos';
 
 % ---- Cellpose models and nIter to test ----------------------------------
-% Add 'bact_fluor_cp3' to cpModels to compare models side-by-side.
-% Add 2000 to niVals to compare default vs high-iteration mode.
-cpModels  = {'cyto3'};    % e.g. {'cyto3', 'bact_fluor_cp3'}
-niVals    = [0];          % 0 = Cellpose default; add 2000 to compare
+% Sweep results (2026-03-03): cyto3 best; bact_fluor_cp3 performed worse;
+% nIter=2000 gave no improvement over default.  Restore those options by
+% uncommenting the alternatives below.
+cpModels  = {'cyto3'};    % alt: {'cyto3', 'bact_fluor_cp3'}
+niVals    = [0];          % alt: [0, 2000]
 cpDiam    = 10;           % expected object diameter in pixels (fixed)
 
 % ---- Sweep grid ---------------------------------------------------------
-% Broad initial sweep; narrow once the useful region is identified.
-cpVals = [-4, -3, -2, -1, 0, 1, 2];   % CellThreshold values
-ftVals = [0.30, 0.50, 0.80, 1.20];    % FlowErrorThreshold values
+% Narrowed around sweet spot found on 2026-03-03 (cp=0, ft=0.8).
+% For a broad initial survey restore: cpVals=[-4,-3,-2,-1,0,1,2], ftVals=[0.30,0.50,0.80,1.20]
+cpVals = [-2, -1, 0, 1];           % CellThreshold values
+ftVals = [0.60, 0.80, 1.00, 1.20]; % FlowErrorThreshold values
 
 % ---- Zoom regions for visual grid ---------------------------------------
 % Multiple rois are all shown without re-running Cellpose.
