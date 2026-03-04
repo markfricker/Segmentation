@@ -82,8 +82,10 @@ skipCombos = {{'bact_fluor_cp3', 2000}};
 % ---- Sweep grid ---------------------------------------------------------
 % Narrowed around sweet spot found on 2026-03-03 (cp=0, ft=0.8).
 % For a broad initial survey restore: cpVals=[-4,-3,-2,-1,0,1,2], ftVals=[0.30,0.50,0.80,1.20]
-cpVals = [-1, 0, 1];            % CellThreshold values
-ftVals = [0.60, 0.80, 1.00];   % FlowErrorThreshold values
+cpVals    = [-1, 0, 1];          % CellThreshold values
+ftVals    = [0.60, 0.80, 1.00]; % FlowErrorThreshold values
+cpMinSize = 50;                  % px^2 — discard objects below this area;
+                                 % equalises false-positive rate across models
 
 % ---- Figure export -------------------------------------------------------
 % Set doExport = true to save sweep figures as PDFs in the BlobFilters
@@ -121,9 +123,9 @@ nCP = numel(cpVals);
 nFT = numel(ftVals);
 
 % Build a tag that uniquely identifies the current sweep grid
-cpCacheTagNew = sprintf('%s|ni%s|d%.0f|cp%s|ft%s', ...
+cpCacheTagNew = sprintf('%s|ni%s|d%.0f|cp%s|ft%s|ms%.0f', ...
     strjoin(cpModels, '_'), num2str(niVals,'%g '), cpDiam, ...
-    num2str(cpVals,'%.2f '), num2str(ftVals,'%.2f '));
+    num2str(cpVals,'%.2f '), num2str(ftVals,'%.2f '), cpMinSize);
 
 doSweep = true;
 if exist('cpCacheTag','var')  && strcmp(cpCacheTag, cpCacheTagNew) && ...
@@ -188,6 +190,7 @@ if doSweep
                     pCP.cellProb      = cpVals(ci);
                     pCP.flowThreshold = ftVals(fi);
                     pCP.nIter         = niVals(ni);
+                    pCP.minSize       = cpMinSize;
 
                     fprintf('  cp=%+d  ft=%.2f  ... ', cpVals(ci), ftVals(fi));
                     tic;
