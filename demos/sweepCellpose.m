@@ -1,4 +1,4 @@
-%%
+ and can we replace labels (full image)%%
 % sweepCellpose.m
 %
 % Sweep Cellpose hyperparameters to identify optimal settings for
@@ -259,7 +259,7 @@ for mi = 1:nM
 
         tla = tiledlayout(1, 2, 'TileSpacing','compact', 'Padding','compact');
         title(tla, sprintf('Cellpose sweep — %s', mTag), ...
-              'Color','w', 'FontSize',22, 'FontWeight','bold');
+              'Color','w', 'FontSize',22, 'FontWeight','bold', 'Interpreter','none');
 
         ax1 = nexttile;
         heatmapPanel(ax1, cpVals, ftVals, nObj_mn, 'n objects',  'parula', '%d');
@@ -283,8 +283,8 @@ for mi = 1:nM
                  'Position', [50 50 figW figH]);
 
         tlb = tiledlayout(nCP, nCols, 'TileSpacing','none', 'Padding','tight');
-        title(tlb, sprintf('Labels (full image)  —  %s', mTag), ...
-              'Color','w', 'FontSize',20);
+        title(tlb, sprintf('Mitochondrial segmentation  —  %s', mTag), ...
+              'Color','w', 'FontSize',20, 'Interpreter','none');
 
         for ci = 1:nCP
             % Column 1: raw image annotated with cellProb value
