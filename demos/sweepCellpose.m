@@ -90,7 +90,8 @@ ftVals = [0.60, 0.80, 1.00];   % FlowErrorThreshold values
 % docs/figures directory for inclusion in BlobFilters_manual.tex.
 % Leave false until outputs have been inspected and parameters are finalised.
 doExport = false;
-outDir   = fullfile(blobFunctionPath, 'docs', 'figures');
+outDir   = fullfile(blobFunctionPath, '..', 'docs', 'figures');
+% Note: docs/ lives at BlobFilters_sandbox/docs/, one level above src/.
 
 % =========================================================================
 % Path setup
