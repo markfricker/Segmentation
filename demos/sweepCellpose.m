@@ -76,8 +76,14 @@ cpDiam    = 10;           % expected object diameter in pixels (fixed)
 % ---- Sweep grid ---------------------------------------------------------
 % Narrowed around sweet spot found on 2026-03-03 (cp=0, ft=0.8).
 % For a broad initial survey restore: cpVals=[-4,-3,-2,-1,0,1,2], ftVals=[0.30,0.50,0.80,1.20]
-cpVals = [-2, -1, 0, 1];           % CellThreshold values
-ftVals = [0.60, 0.80, 1.00, 1.20]; % FlowErrorThreshold values
+cpVals = [-1, 0, 1];            % CellThreshold values
+ftVals = [0.60, 0.80, 1.00];   % FlowErrorThreshold values
+
+% ---- Figure export -------------------------------------------------------
+% Set doExport = true to save sweep figures as PDFs in the BlobFilters
+% docs/figures directory for inclusion in BlobFilters_manual.tex.
+doExport = true;
+outDir   = fullfile(blobFunctionPath, 'docs', 'figures');
 
 % =========================================================================
 % Path setup
@@ -297,6 +303,22 @@ for mi = 1:nM
 
         fprintf('  Figs %d-%d: heatmap + label grid for %s\n', ...
                 figNum-1, figNum, mTag);
+
+        % ---- Export figures for LaTeX manual ----------------------------
+        if doExport && ~isempty(outDir) && isfolder(outDir)
+            safeMTag = strrep(strtrim(mTag), ' ', '_');
+            fn_heat  = fullfile(outDir, ...
+                sprintf('cellpose_sweep_heatmaps_%s.pdf', safeMTag));
+            fn_labs  = fullfile(outDir, ...
+                sprintf('cellpose_sweep_labels_%s.pdf', safeMTag));
+            exportgraphics(hfa, fn_heat, 'ContentType', 'vector');
+            exportgraphics(hfb, fn_labs, 'ContentType', 'vector');
+            fprintf('  Exported: %s\n', fn_heat);
+            fprintf('  Exported: %s\n', fn_labs);
+        elseif doExport
+            warning('sweepCellpose:noOutDir', ...
+                    'doExport=true but outDir does not exist:\n  %s', outDir);
+        end
     end
 end
 
