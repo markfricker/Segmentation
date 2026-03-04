@@ -66,12 +66,18 @@ blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFil
 blobImagePath    = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\demos';
 
 % ---- Cellpose models and nIter to test ----------------------------------
-% Sweep results (2026-03-03): cyto3 best; bact_fluor_cp3 performed worse;
-% nIter=2000 gave no improvement over default.  Restore those options by
-% uncommenting the alternatives below.
-cpModels  = {'cyto3'};    % alt: {'cyto3', 'bact_fluor_cp3'}
-niVals    = [0];          % alt: [0, 2000]
+% cyto3: general-purpose Cellpose model.
+% bact_fluor_cp3: Cellpose 3 bacteria-fluorescence model; morphologically
+%   similar to mitochondria so worth comparison.
+% nIter=2000: literature recommendation for elongated structures (cyto3 only).
+cpModels  = {'cyto3', 'bact_fluor_cp3'};
+niVals    = [0, 2000];
 cpDiam    = 10;           % expected object diameter in pixels (fixed)
+
+% Combinations to exclude: each entry is {modelName, nIterValue}.
+% bact_fluor_cp3+nIter=2000 is excluded — bact_fluor_cp3 already underperforms
+% at default nIter so the high-nIter variant adds no useful information.
+skipCombos = {{'bact_fluor_cp3', 2000}};
 
 % ---- Sweep grid ---------------------------------------------------------
 % Narrowed around sweet spot found on 2026-03-03 (cp=0, ft=0.8).
@@ -82,7 +88,8 @@ ftVals = [0.60, 0.80, 1.00];   % FlowErrorThreshold values
 % ---- Figure export -------------------------------------------------------
 % Set doExport = true to save sweep figures as PDFs in the BlobFilters
 % docs/figures directory for inclusion in BlobFilters_manual.tex.
-doExport = true;
+% Leave false until outputs have been inspected and parameters are finalised.
+doExport = false;
 outDir   = fullfile(blobFunctionPath, 'docs', 'figures');
 
 % =========================================================================
@@ -163,6 +170,13 @@ if doSweep
         for ni = 1:nNI
             niStr = '';
             if niVals(ni) > 0, niStr = sprintf('  nIter=%d', niVals(ni)); end
+
+            % Skip excluded (model, nIter) combinations
+            if any(cellfun(@(s) strcmp(cpModels{mi},s{1}) && niVals(ni)==s{2}, skipCombos))
+                fprintf('\n--- %s%s --- [SKIPPED]\n', cpModels{mi}, niStr);
+                continue;
+            end
+
             fprintf('\n--- %s%s ---\n', cpModels{mi}, niStr);
             t0 = tic;
 
@@ -203,6 +217,9 @@ end  % doSweep
 % =========================================================================
 for mi = 1:nM
     for ni = 1:nNI
+        if any(cellfun(@(s) strcmp(cpModels{mi},s{1}) && niVals(ni)==s{2}, skipCombos))
+            continue;
+        end
         niStr = '';
         if niVals(ni) > 0, niStr = sprintf('  nIter=%d', niVals(ni)); end
         printCPtable(cpModels{mi}, niStr, cpVals, ftVals, ...
@@ -219,6 +236,9 @@ figNum = 0;
 
 for mi = 1:nM
     for ni = 1:nNI
+        if any(cellfun(@(s) strcmp(cpModels{mi},s{1}) && niVals(ni)==s{2}, skipCombos))
+            continue;
+        end
         niStr = '';
         if niVals(ni) > 0, niStr = sprintf(' nIter=%d', niVals(ni)); end
         mTag = sprintf('%s%s', cpModels{mi}, niStr);
@@ -306,7 +326,8 @@ for mi = 1:nM
 
         % ---- Export figures for LaTeX manual ----------------------------
         if doExport && ~isempty(outDir) && isfolder(outDir)
-            safeMTag = strrep(strtrim(mTag), ' ', '_');
+            % Replace spaces and '=' so filenames are clean for LaTeX \includegraphics
+            safeMTag = strrep(strrep(strtrim(mTag), ' ', '_'), '=', '-');
             fn_heat  = fullfile(outDir, ...
                 sprintf('cellpose_sweep_heatmaps_%s.pdf', safeMTag));
             fn_labs  = fullfile(outDir, ...
