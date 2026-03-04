@@ -91,7 +91,7 @@ cpMinSize = 64;                  % px^2 — discard objects below this area;
 % Set doExport = true to save sweep figures as PDFs in the BlobFilters
 % docs/figures directory for inclusion in BlobFilters_manual.tex.
 % Leave false until outputs have been inspected and parameters are finalised.
-doExport = false;
+doExport = true;
 outDir   = fullfile(blobFunctionPath, '..', 'docs', 'figures');
 % Note: docs/ lives at BlobFilters_sandbox/docs/, one level above src/.
 
@@ -259,7 +259,7 @@ for mi = 1:nM
 
         tla = tiledlayout(1, 2, 'TileSpacing','compact', 'Padding','compact');
         title(tla, sprintf('Cellpose sweep — %s', mTag), ...
-              'Color','w', 'FontSize',11, 'FontWeight','bold');
+              'Color','w', 'FontSize',22, 'FontWeight','bold');
 
         ax1 = nexttile;
         heatmapPanel(ax1, cpVals, ftVals, nObj_mn, 'n objects',  'parula', '%d');
@@ -284,7 +284,7 @@ for mi = 1:nM
 
         tlb = tiledlayout(nCP, nCols, 'TileSpacing','none', 'Padding','tight');
         title(tlb, sprintf('Labels (full image)  —  %s', mTag), ...
-              'Color','w', 'FontSize',10);
+              'Color','w', 'FontSize',20);
 
         for ci = 1:nCP
             % Column 1: raw image annotated with cellProb value
@@ -408,10 +408,10 @@ set(ax, ...
     'YTick',      1:nCP, ...
     'YTickLabel', arrayfun(@(v) sprintf('%+d',v),  cpVals, 'UniformOutput',false), ...
     'Color',      [0.1 0.1 0.1], 'XColor','w', 'YColor','w', ...
-    'TickDir',    'out', 'FontSize',9);
+    'TickDir',    'out', 'FontSize',18);
 xlabel(ax, 'flowThreshold', 'Color','w');
 ylabel(ax, 'cellProb',      'Color','w');
-title(ax,  titleStr,        'Color','w', 'FontSize',10);
+title(ax,  titleStr,        'Color','w', 'FontSize',20);
 
 for ci = 1:nCP
     for fi = 1:nFT
@@ -419,7 +419,7 @@ for ci = 1:nCP
         if ~isnan(v)
             text(ax, fi, ci, sprintf(fmt, v), ...
                  'HorizontalAlignment','center', 'VerticalAlignment','middle', ...
-                 'Color','w', 'FontSize',8, 'FontWeight','bold');
+                 'Color','w', 'FontSize',16, 'FontWeight','bold');
         end
     end
 end
