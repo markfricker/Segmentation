@@ -146,6 +146,9 @@ end
 % =========================================================================
 fprintf('\n=== Enhancer parameter sweep ===\n');
 
+overallBestLabels = cell(1, nTasks);   % best label image per enhancer (for HSV fig)
+overallBestF1     = zeros(1, nTasks);  % corresponding F1
+
 for ti = 1:nTasks
     tk = tasks{ti};
 
@@ -235,12 +238,39 @@ for ti = 1:nTasks
                 tk.name, tk.cfgDescs{iBest}, bestF1overall, gtLabel), ...
         panelTitles, cmaps);
 
+    overallBestLabels{ti} = bestLabelsPerCfg{iBest};
+    overallBestF1(ti)     = bestF1overall;
+
     fprintf('  >> Best overall: config %d (%s)  F1=%.4f\n', ...
             iBest, tk.cfgDescs{iBest}, bestF1overall);
     fprintf('  Fig %d generated.\n', figNum);
 end
 
-fprintf('\nDone. %d figures generated.\n', nTasks);
+% =========================================================================
+% HSV overlay summary figure  (Fig nTasks+1)
+%   Hue = per-label colour, Saturation = 1, Value = original image intensity.
+%   Background (unlabelled) shown as grayscale (S=0).
+% =========================================================================
+hsvPanels = [{labelHSVoverlay(zeros(size(Ireal),'uint16'), Ireal)}, ...   % raw (all grey)
+             cellfun(@(L) labelHSVoverlay(L, Ireal), overallBestLabels, ...
+                     'UniformOutput', false), ...
+             {labelHSVoverlay(cpL, Ireal)}];
+hsvTitles = [{'Raw'}];
+for ti = 1:nTasks
+    hsvTitles{end+1} = sprintf('%s\nF1=%.3f', tasks{ti}.tag, overallBestF1(ti)); %#ok<SAGROW>
+end
+hsvTitles{end+1} = sprintf('Cellpose GT\n(n=%d)', nCP);
+
+figHSV = nTasks + 1;
+figure(figHSV);
+set(gcf, 'Name','HSV overlay — hue=label, value=image', 'NumberTitle','off', ...
+         'Color','k', 'Position',[30, 50, 300*(nTasks+2), 360]);
+segFillFigure(figHSV, hsvPanels, ...
+    sprintf('HSV overlay: hue=label  value=image intensity  |  GT: %s', gtLabel), ...
+    hsvTitles, repmat({[]}, 1, nTasks+2));
+
+fprintf('Fig %d (HSV overlay) generated.\n', figHSV);
+fprintf('\nDone. %d figures generated.\n', nTasks + 1);
 
 
 % =========================================================================
@@ -253,6 +283,38 @@ if max(L(:)) == 0
 else
     rgb = label2rgb(L, 'jet', 'k', 'shuffle');
 end
+end
+
+
+function rgb = labelHSVoverlay(L, I)
+% labelHSVoverlay  Colour-coded segmentation with original image intensity.
+%   H = per-label hue (golden-ratio sequence, fixed seed for reproducibility)
+%   S = 1 for labelled pixels, 0 for background (shown as grayscale)
+%   V = normalised image intensity
+
+% Normalise image to [0,1] for the Value channel
+Iv = double(I);
+Iv = (Iv - min(Iv(:))) / max(eps, max(Iv(:)) - min(Iv(:)));
+
+nLabels = double(max(L(:)));
+H = zeros(size(L), 'double');
+S = zeros(size(L), 'double');   % background stays S=0 (grey)
+
+if nLabels > 0
+    % Golden-ratio hue sequence gives good perceptual separation
+    rng(42);
+    hues = mod((1:nLabels) * 0.618033988749895, 1);
+    hues = hues(randperm(nLabels));
+
+    % Vectorised assignment via lookup table
+    hueMap = [0;     hues(:)];          % index 1 = label 0 (background)
+    satMap = [0; ones(nLabels, 1)];
+    idx    = double(L(:)) + 1;          % label 0 -> index 1
+    H      = reshape(hueMap(idx), size(L));
+    S      = reshape(satMap(idx), size(L));
+end
+
+rgb = im2uint8(hsv2rgb(cat(3, H, S, Iv)));
 end
 
 
