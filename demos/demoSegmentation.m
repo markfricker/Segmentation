@@ -9,48 +9,40 @@
 %   localThresholdFast    — sauvola, bernsen, bradley, niblack
 %   watershedSegment      — distance, gradient, marker
 %
-% PIPELINE — Real mitochondrial image (Figs 4-7)
-%   Load mitImage.mat from BlobFilters demos (set blobImagePath below).
-%   Preprocessing : orientedGaussSmooth  → Ism  (if BlobFilters available)
-%   Enhancers (on Ism): logEnhance | fiberEnhance | capsuleEnhance(DoC)
-%                       | rodGranulometryEnhance
-%   Cellpose (on raw):  cellposeEnhance  → binary mask + label image
-%   Segmentation: marker-controlled watershedSegment on each enhancement map.
-%   Comparison: watershed labels from each enhancer vs Cellpose labels.
+% PIPELINE — Real mitochondrial image (Figs 4-8, one per enhancer)
+%   Load mitImagecrop.mat from BlobFilters demos/.
+%   Preprocessing : orientedGaussSmooth  → Ism
+%   Cellpose GT   : cyto3, cellProb=0, flowThreshold=0.8, minSize=64
+%   For each enhancer (log, fiber, capS, capD, rod):
+%     Sweep enhancer parameter configs x watershed/hysteresis combos.
+%     One figure per enhancer: Raw | best-WS per cfg | Cellpose GT.
 %
 % FIGURES PRODUCED
 %   Fig 1 — Synthetic: thresholding  (Raw | Sauvola | Bernsen | Bradley | Niblack)
 %   Fig 2 — Synthetic: watershed     (Raw | Sauvola mask | Dist | Grad | Marker)
 %   Fig 3 — Synthetic: zoom on marker-WS
-%   Fig 4 — Real:      enhancement maps  (Raw | log | fib | cap | rod | CP mask | CP labels)
-%   Fig 5 — Real:      watershed vs CP   (Raw | log-WS | fib-WS | cap-WS | rod-WS | CP labels)
-%   Fig 6 — Real:      zoom cluster 1    (same 6 columns as Fig 5)
-%   Fig 7 — Real:      zoom cluster 2    (same 6 columns as Fig 5)
+%   Fig 4 — logEnhance sweep        (best WS per config vs GT)
+%   Fig 5 — fiberEnhance sweep
+%   Fig 6 — capsule(single) sweep
+%   Fig 7 — capsule(DoC) sweep
+%   Fig 8 — rodGranulometry sweep
 %
 % REQUIREMENTS
-%   localThresholdFast.m and watershedSegment.m (added automatically).
+%   localThresholdFast.m and watershedSegment.m (Segmentation_sandbox/src)
+%   BlobFilters: logEnhance, fiberEnhance, capsuleEnhance,
+%                rodGranulometryEnhance, cellposeEnhance, orientedGaussSmooth
 %   Image Processing Toolbox (bwdist, watershed, imextendedmax, etc.)
-%   BlobFilters path for enhancement (optional; raw image used as fallback).
+%   MATLAB Medical Imaging Toolbox Interface for Cellpose Library
 
 clear; clc; close all;
 
 % =========================================================================
-% CONFIGURATION  ← adjust these paths for your machine
+% CONFIGURATION  ← adjust this path for your machine
 % =========================================================================
-% Directory containing BlobFilters enhancer .m files (rodGranulometryEnhance etc.)
-% The main repo has these at the repo root (not in a src/ subdirectory).
-% Set to '' to skip enhancement and use the raw image directly.
+% Directory containing BlobFilters enhancer .m files.
 blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src';
 
-% Directory containing mitImage.mat and Ireal.png.
-% These live in the demos/ folder of the active worktree.
-blobImagePath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src\.claude\worktrees\thirsty-wescoff\demos';
-
-% Zoom ROIs for real image:  [x_left, y_top, width, height]  (imcrop convention)
-roi_real1 = [100  80  220 220];   % cluster 1  (adjust after Fig 5)
-roi_real2 = [330 220  220 220];   % cluster 2  (adjust after Fig 5)
-
-% Synthetic image zoom ROI
+% Synthetic image zoom ROI  [x_left, y_top, width, height]  (imcrop convention)
 roi_synth = [30 20 70 70];
 
 % =========================================================================
@@ -81,11 +73,6 @@ pNibl_s.windowsize = win_s; pNibl_s.k = -0.15;
 pWS_dist_s  = struct('method','distance', 'threshold',0.35, 'hMinima',1.5,  'minArea',20);
 pWS_grad_s  = struct('method','gradient', 'threshold',0.35, 'smoothSigma',1.5, 'hMinima',0.03, 'minArea',20);
 pWS_mark_s  = struct('method','marker',   'threshold',0.35, 'smoothSigma',1.5, 'hMinima',0.05, 'minArea',20);
-
-% --- watershedSegment (real mito, marker method — applied to all enhancers)
-% A single consistent parameter set keeps the comparison fair.
-pWS_r = struct('method','marker', 'threshold',0.30, ...
-               'smoothSigma',1.5, 'hMinima',0.05, 'minArea',50);
 
 % =========================================================================
 % =========================================================================
@@ -188,201 +175,221 @@ segFillFigure(3, ...
     {'Raw','Sauvola mask',sprintf('Marker-WS (n=%d)',max(L_mark_s(:)))}, ...
     {'gray',[],[]});
 
+fprintf('Figs 1-3 generated.\n');
+
 % =========================================================================
 % =========================================================================
-%  PART B — REAL MITOCHONDRIAL IMAGE
+%  PART B — REAL MITOCHONDRIAL IMAGE (CROP)
 % =========================================================================
 % =========================================================================
 
 fprintf('\n=== PART B: Real mitochondrial image ===\n');
 
-% -------------------------------------------------------------------------
-% B1.  Load real image
-% -------------------------------------------------------------------------
-mitoMatPath = fullfile(blobImagePath, 'mitImage.mat');
-mitoImgPath = fullfile(blobImagePath, 'Ireal.png');
-
-if ~isempty(blobImagePath) && exist(mitoMatPath, 'file')
-    fprintf('Loading mitImage.mat...\n');
-    tmp   = load(mitoMatPath, 'I');
-    Ireal = im2single(tmp.I);
-elseif ~isempty(blobImagePath) && exist(mitoImgPath, 'file')
-    fprintf('Loading Ireal.png...\n');
-    Ireal = im2single(imread(mitoImgPath));
-    if size(Ireal,3) > 1, Ireal = rgb2gray(Ireal); end
-else
-    fprintf('  Real image not found at:\n    %s\n    %s\n', mitoMatPath, mitoImgPath);
-    fprintf('  Check blobImagePath at the top of this script.\n');
+if ~hasBlobFilters
+    fprintf('  BlobFilters not found at:\n    %s\n', blobFunctionPath);
+    fprintf('  Cannot run Part B. Check blobFunctionPath.\n');
     fprintf('\nDone. 3 figures generated (synthetic only).\n');
     return
 end
+
+% -------------------------------------------------------------------------
+% B1.  Load image
+% -------------------------------------------------------------------------
+mitoMat = fullfile(blobFunctionPath, '..', 'demos', 'mitImagecrop.mat');
+if ~exist(mitoMat, 'file')
+    fprintf('  mitImagecrop.mat not found at:\n    %s\n', mitoMat);
+    fprintf('\nDone. 3 figures generated (synthetic only).\n');
+    return
+end
+fprintf('Loading mitImagecrop.mat...\n');
+tmp   = load(mitoMat);
+flds  = fieldnames(tmp);
+Ireal = im2single(tmp.(flds{1}));
 fprintf('  Size: %d x %d px\n', size(Ireal,2), size(Ireal,1));
 
 % -------------------------------------------------------------------------
-% B2.  BlobFilters enhancer parameters  (same as demoMitoEnhance)
+% B2.  Cellpose ground truth
 % -------------------------------------------------------------------------
-pOGS.sigmaAlong   = 4;    pOGS.sigmaAcross  = 1.5;
-pOGS.orientations = 8;    pOGS.sigmaGrad    = 1.5;  pOGS.sigmaInt = 5;
+fprintf('\n=== Cellpose ground truth ===\n');
+cpGTmodel         = 'cyto3';
+cpGTdiameter      = 10;
+cpGTcellProb      = 0;
+cpGTflowThreshold = 0.8;
+cpGTnIter         = 0;
+cpMinSize         = 64;
 
-pLog.sigmas    = [2 3 4 5 6];   pLog.normalize = true;
+pCP.model         = cpGTmodel;
+pCP.diameter      = cpGTdiameter;
+pCP.cellProb      = cpGTcellProb;
+pCP.flowThreshold = cpGTflowThreshold;
+pCP.nIter         = cpGTnIter;
+pCP.minSize       = cpMinSize;
 
-pFib.widths    = [6 7 8 9 10];  pFib.multimode = 'stack';  pFib.normalize = true;
-
-pCap.lengths      = [12 16 20 28 36 40];  pCap.width      = 8;
-pCap.wideWidth    = 18;                    pCap.alpha      = 0.55;
-pCap.orientations = 12;                    pCap.mode       = 'doc';
-pCap.normalize    = true;
-
-pRod.lengths      = [8 12 16 20 28 36];   pRod.orientations = 8;
-pRod.normalize    = true;
-
-pCP.model         = 'cyto3';   pCP.diameter      = 10;
-pCP.cellProb      = -2;        pCP.flowThreshold = 0.8;
-
-% -------------------------------------------------------------------------
-% B3.  Preprocessing: OGS smooth
-% -------------------------------------------------------------------------
-if hasBlobFilters && exist('orientedGaussSmooth','file')
-    fprintf('  orientedGaussSmooth... '); tic;
-    Ism = orientedGaussSmooth(Ireal, pOGS);
-    fprintf('%.2fs\n', toc);
-else
-    Ism = Ireal;   % fallback: no OGS
-end
-
-% -------------------------------------------------------------------------
-% B4.  Classical enhancers (on Ism)
-% -------------------------------------------------------------------------
-fprintf('\n--- Classical enhancers (on OGS-smoothed image) ---\n');
-
-if hasBlobFilters
-    fprintf('  logEnhance...             '); tic;
-    logR = logEnhance(Ism, pLog);
-    fprintf('%.2fs\n', toc);
-
-    fprintf('  fiberEnhance...           ');
-    try
-        tic; fibR = fiberEnhance(Ism, pFib); fprintf('%.2fs\n', toc);
-    catch ME
-        fprintf('SKIPPED (%s)\n', ME.message);
-        fibR = zeros(size(Ism), 'single');
-    end
-
-    fprintf('  capsuleEnhance (DoC)...   '); tic;
-    capR = capsuleEnhance(Ism, pCap);
-    fprintf('%.2fs\n', toc);
-
-    fprintf('  rodGranulometryEnhance... '); tic;
-    rodR = rodGranulometryEnhance(Ism, pRod);
-    fprintf('%.2fs\n', toc);
-else
-    fprintf('  BlobFilters not found — using raw image for all enhancer slots.\n');
-    logR = Ireal;  fibR = Ireal;  capR = Ireal;  rodR = Ireal;
-end
-
-% -------------------------------------------------------------------------
-% B5.  Cellpose (on raw image)
-% -------------------------------------------------------------------------
-fprintf('\n--- Cellpose ---\n');
 hasCellpose = exist('cellpose','file') ~= 0;
 if hasCellpose
-    fprintf('  cellposeEnhance... ');
+    fprintf('  cellposeEnhance (%s, cp=%d, ft=%.1f, minSize=%d)... ', ...
+            cpGTmodel, cpGTcellProb, cpGTflowThreshold, cpMinSize);
     try
         tic;
-        [cpMask, cpL] = cellposeEnhance(Ireal, pCP);
-        fprintf('%.2fs  (%d objects)\n', toc, max(cpL(:)));
+        [~, cpL] = cellposeEnhance(Ireal, pCP);
+        fprintf('%.1fs  (%d objects)\n', toc, max(cpL(:)));
     catch ME
-        fprintf('SKIPPED (%s)\n', ME.message);
-        cpMask = zeros(size(Ireal),'single');
-        cpL    = zeros(size(Ireal),'uint16');
-        hasCellpose = false;
+        fprintf('FAILED (%s)\n', ME.message);
+        error('demoSegmentation:noCellpose', ...
+              'Cellpose GT failed. Cannot continue without ground truth.');
     end
 else
-    fprintf('  SKIPPED (Cellpose add-on not installed)\n');
-    cpMask = zeros(size(Ireal),'single');
-    cpL    = zeros(size(Ireal),'uint16');
+    error('demoSegmentation:noCellpose', ...
+          'Cellpose add-on not installed. Cannot generate ground truth.');
+end
+
+cpBW  = logical(cpL > 0);
+cpRGB = labelRGB(cpL);
+nCP   = max(cpL(:));
+
+% -------------------------------------------------------------------------
+% B3.  OGS preprocessing
+% -------------------------------------------------------------------------
+fprintf('\n=== OGS preprocessing ===\n');
+pOGS.sigmaAlong = 4;  pOGS.sigmaAcross = 1.5;
+pOGS.orientations = 8;  pOGS.sigmaGrad = 1.5;  pOGS.sigmaInt = 5;
+fprintf('  orientedGaussSmooth... '); tic;
+Ism = orientedGaussSmooth(Ireal, pOGS);
+fprintf('%.1fs\n', toc);
+
+% -------------------------------------------------------------------------
+% B4.  Watershed sweep grids (per-task threshold ranges)
+% -------------------------------------------------------------------------
+hMinimaVals = [0.02 0.05 0.10];
+minAreaVals = [20 50];
+
+% Default: log, fiber, rod
+wsThreshDef     = [0.20 0.25 0.30 0.35 0.40];
+wsThreshLowDef  = {[], 0.10, 0.15};
+
+% Capsule: higher thresholds, raised hysteresis lower bounds
+wsThreshHigh    = [0.30 0.35 0.40 0.45 0.50];
+wsThreshLowHigh = {[], 0.20, 0.25};
+
+% -------------------------------------------------------------------------
+% B5.  Enhancer task definitions + per-task WS config
+% -------------------------------------------------------------------------
+tasks  = buildTasks();
+nTasks = numel(tasks);
+
+for ti = 1:nTasks
+    switch tasks{ti}.tag
+        case {'capS-WS', 'capD-WS'}
+            tasks{ti}.wsThresholds = wsThreshHigh;
+            tasks{ti}.wsThreshLow  = wsThreshLowHigh;
+        otherwise
+            tasks{ti}.wsThresholds = wsThreshDef;
+            tasks{ti}.wsThreshLow  = wsThreshLowDef;
+    end
 end
 
 % -------------------------------------------------------------------------
-% B6.  Marker watershed on each enhancement map
-%      Single consistent parameter set — keeps the comparison fair.
+% B6.  Per-enhancer sweep — one figure per enhancer (Figs 4..4+nTasks-1)
 % -------------------------------------------------------------------------
-fprintf('\n--- Marker watershed on each enhancement map ---\n');
+fprintf('\n=== Enhancer parameter sweep ===\n');
+gtLabel = sprintf('%s cp=%d ft=%.1f minSize=%d', ...
+                  cpGTmodel, cpGTcellProb, cpGTflowThreshold, cpMinSize);
 
-runWS = @(R) watershedSegment(R, 'method',pWS_r.method, ...
-    'threshold',pWS_r.threshold, 'smoothSigma',pWS_r.smoothSigma, ...
-    'hMinima',pWS_r.hMinima, 'minArea',pWS_r.minArea);
+for ti = 1:nTasks
+    tk = tasks{ti};
 
-fprintf('  log-WS...   '); tic; [~, L_log] = runWS(logR); fprintf('%.2fs  (%d objects)\n', toc, max(L_log(:)));
-fprintf('  fib-WS...   '); tic; [~, L_fib] = runWS(fibR); fprintf('%.2fs  (%d objects)\n', toc, max(L_fib(:)));
-fprintf('  cap-WS...   '); tic; [~, L_cap] = runWS(capR); fprintf('%.2fs  (%d objects)\n', toc, max(L_cap(:)));
-fprintf('  rod-WS...   '); tic; [~, L_rod] = runWS(rodR); fprintf('%.2fs  (%d objects)\n', toc, max(L_rod(:)));
+    % Build task-specific WS grid
+    wsGridTask = {};
+    for thr = tk.wsThresholds
+        for hm = hMinimaVals
+            for ma = minAreaVals
+                for tli = 1:numel(tk.wsThreshLow)
+                    tl = tk.wsThreshLow{tli};
+                    if ~isempty(tl) && tl >= thr, continue; end
+                    wsGridTask{end+1} = struct('threshold',thr,'hMinima',hm, ...
+                                               'minArea',ma,'threshLow',tl); %#ok<SAGROW>
+                end
+            end
+        end
+    end
+    nWSTask = numel(wsGridTask);
+    nCfgs   = numel(tk.cfgs);
 
-% -------------------------------------------------------------------------
-% B7.  Colour overlays
-% -------------------------------------------------------------------------
-rgb_log = labelRGB(L_log);
-rgb_fib = labelRGB(L_fib);
-rgb_cap = labelRGB(L_cap);
-rgb_rod = labelRGB(L_rod);
-rgb_cpL = labelRGB(cpL);
+    fprintf('\n--- %s (%d configs x %d WS = %d evals) ---\n', ...
+            tk.name, nCfgs, nWSTask, nCfgs * nWSTask);
 
-n_cp  = max(cpL(:));
-n_log = max(L_log(:));  n_fib = max(L_fib(:));
-n_cap = max(L_cap(:));  n_rod = max(L_rod(:));
+    bestLabelsPerCfg = cell(1, nCfgs);
+    bestF1PerCfg     = zeros(1, nCfgs);
+    bestDescPerCfg   = cell(1, nCfgs);   % panel subtitle (cfgDesc + F1)
 
-% Shared panel titles / colormaps for Figs 5-7
-wsTitles = {'Raw', ...
-    sprintf('log-WS  (n=%d)',  n_log), ...
-    sprintf('fib-WS  (n=%d)',  n_fib), ...
-    sprintf('cap-WS  (n=%d)',  n_cap), ...
-    sprintf('rod-WS  (n=%d)',  n_rod), ...
-    sprintf('Cellpose (n=%d)', n_cp)};
-wsCmaps  = {'gray',[],[],[],[],[]};
+    for ci = 1:nCfgs
+        fprintf('  Config %d/%d: %s\n    Enhancement... ', ci, nCfgs, tk.cfgDescs{ci});
+        tic;
+        try
+            R = tk.fn(Ism, tk.cfgs{ci});
+            fprintf('%.1fs\n', toc);
+        catch ME
+            fprintf('SKIPPED (%s)\n', ME.message);
+            bestLabelsPerCfg{ci} = zeros(size(Ireal), 'uint16');
+            bestDescPerCfg{ci}   = sprintf('%s\n(SKIPPED)', tk.cfgDescs{ci});
+            continue;
+        end
 
-% -------------------------------------------------------------------------
-% B8.  Figures 4-7
-% -------------------------------------------------------------------------
+        bestF1 = 0;
+        bestL  = zeros(size(Ireal), 'uint16');
+        bestWD = '';
 
-% Fig 4 — enhancement maps
-figure(4);
-set(gcf,'Name','Real — Enhancement maps','NumberTitle','off', ...
-        'Color','k','Position',[30 680 1820 300]);
-segFillFigure(4, {Ireal, logR, fibR, capR, rodR, cpMask, rgb_cpL}, ...
-    'Enhancement maps — real mitochondria', ...
-    {'Raw','log','fib','cap (DoC)','rodGran', ...
-     sprintf('CP mask (n=%d)',n_cp), sprintf('CP labels (n=%d)',n_cp)}, ...
-    {'gray','hot','hot','hot','hot','hot',[]});
+        for wi = 1:nWSTask
+            ws = wsGridTask{wi};
+            try
+                [BW, L] = watershedSegment(R, ...
+                    'method',      'marker', ...
+                    'threshold',   ws.threshold, ...
+                    'threshLow',   ws.threshLow, ...
+                    'smoothSigma', 1.5, ...
+                    'hMinima',     ws.hMinima, ...
+                    'minArea',     ws.minArea);
+            catch
+                continue;
+            end
+            [f1, ~, ~, ~] = evalBinary(BW, cpBW);
+            if f1 > bestF1
+                bestF1 = f1;
+                bestL  = L;
+                bestWD = wsDesc(ws);
+            end
+        end
 
-% Fig 5 — watershed vs Cellpose, full FOV
-figure(5);
-set(gcf,'Name','Real — Watershed vs Cellpose (full FOV)','NumberTitle','off', ...
-        'Color','k','Position',[30 380 1820 300]);
-segFillFigure(5, {Ireal, rgb_log, rgb_fib, rgb_cap, rgb_rod, rgb_cpL}, ...
-    'Marker watershed on each enhancer vs Cellpose — full FOV', ...
-    wsTitles, wsCmaps);
+        bestLabelsPerCfg{ci} = bestL;
+        bestF1PerCfg(ci)     = bestF1;
+        bestDescPerCfg{ci}   = sprintf('%s\nF1=%.3f  n=%d', ...
+                                       tk.cfgDescs{ci}, bestF1, max(bestL(:)));
+        fprintf('    Best F1=%.4f  WS: %s\n', bestF1, bestWD);
+    end
 
-% Fig 6 — zoom cluster 1
-figure(6);
-set(gcf,'Name','Real — Zoom cluster 1','NumberTitle','off', ...
-        'Color','k','Position',[30 60 1820 300]);
-segFillFigure(6, ...
-    {imcrop(Ireal,roi_real1), imcrop(rgb_log,roi_real1), imcrop(rgb_fib,roi_real1), ...
-     imcrop(rgb_cap,roi_real1), imcrop(rgb_rod,roi_real1), imcrop(rgb_cpL,roi_real1)}, ...
-    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d px]', roi_real1(1),roi_real1(2),roi_real1(3),roi_real1(4)), ...
-    wsTitles, wsCmaps);
+    [bestF1overall, iBest] = max(bestF1PerCfg);
 
-% Fig 7 — zoom cluster 2
-figure(7);
-set(gcf,'Name','Real — Zoom cluster 2','NumberTitle','off', ...
-        'Color','k','Position',[30 0 1820 300]);
-segFillFigure(7, ...
-    {imcrop(Ireal,roi_real2), imcrop(rgb_log,roi_real2), imcrop(rgb_fib,roi_real2), ...
-     imcrop(rgb_cap,roi_real2), imcrop(rgb_rod,roi_real2), imcrop(rgb_cpL,roi_real2)}, ...
-    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d px]', roi_real2(1),roi_real2(2),roi_real2(3),roi_real2(4)), ...
-    wsTitles, wsCmaps);
+    % Figure: Raw | cfg1-bestWS | cfg2-bestWS | ... | Cellpose GT
+    panels      = [{Ireal}, cellfun(@labelRGB, bestLabelsPerCfg, 'UniformOutput',false), {cpRGB}];
+    panelTitles = [{'Raw'}, bestDescPerCfg, {sprintf('Cellpose GT\n(n=%d)', nCP)}];
+    cmaps       = [{'gray'}, repmat({[]}, 1, nCfgs), {[]}];
 
-fprintf('\nDone. 7 figures generated.\n');
+    figNum = 3 + ti;
+    figW   = max(900, 300 * (nCfgs + 2));
+    figure(figNum);
+    set(gcf, 'Name', sprintf('%s sweep', tk.name), 'NumberTitle','off', ...
+             'Color','k', 'Position',[30, 50, figW, 360]);
+    segFillFigure(figNum, panels, ...
+        sprintf('%s — best WS per config  |  best: %s, F1=%.3f  |  GT: %s', ...
+                tk.name, tk.cfgDescs{iBest}, bestF1overall, gtLabel), ...
+        panelTitles, cmaps);
+
+    fprintf('  >> Best overall: config %d (%s)  F1=%.4f\n', ...
+            iBest, tk.cfgDescs{iBest}, bestF1overall);
+    fprintf('  Fig %d generated.\n', figNum);
+end
+
+fprintf('\nDone. %d figures generated.\n', 3 + nTasks);
 
 
 % =========================================================================
@@ -437,8 +444,121 @@ for k = 1:N
         imshow(panels{k}, []);
         colormap(ax, cmaps{k});
     end
-    title(panelTitles{k}, 'Color','w', 'FontSize',9);
+    title(panelTitles{k}, 'Color','w', 'FontSize',9, 'Interpreter','none');
     set(ax, 'XColor','none', 'YColor','none');
 end
-sgtitle(figTitle, 'Color','w', 'FontSize',12, 'FontWeight','bold');
+sgtitle(figTitle, 'Color','w', 'FontSize',11, 'FontWeight','bold', 'Interpreter','none');
+end
+
+
+function tasks = buildTasks()
+% buildTasks  Define all enhancer tasks with their parameter configuration grids.
+
+tasks = {};
+
+% --- logEnhance -----------------------------------------------------------
+t.name = 'logEnhance';  t.tag = 'log-WS';
+t.fn   = @(I, p) logEnhance(I, p);
+t.cfgs = {
+    struct('sigmas',[1 2 3],      'normalize',true),
+    struct('sigmas',[2 3 4 5],    'normalize',true),
+    struct('sigmas',[2 3 4 5 6],  'normalize',true),
+    struct('sigmas',[3 4 5 6 7],  'normalize',true)
+};
+t.cfgDescs = {
+    'sigmas=[1 2 3]',
+    'sigmas=[2 3 4 5]',
+    'sigmas=[2 3 4 5 6]',
+    'sigmas=[3 4 5 6 7]'
+};
+t.maxExpand = 4;
+tasks{end+1} = t;
+
+% --- fiberEnhance ---------------------------------------------------------
+t.name = 'fiberEnhance';  t.tag = 'fib-WS';
+t.fn   = @(I, p) fiberEnhance(I, p);
+t.cfgs = {
+    struct('widths',[4 5 6 7],    'multimode','stack','normalize',true),
+    struct('widths',[6 7 8 9 10], 'multimode','stack','normalize',true),
+    struct('widths',[8 9 10 12],  'multimode','stack','normalize',true)
+};
+t.cfgDescs = {
+    'widths=[4 5 6 7]',
+    'widths=[6 7 8 9 10]',
+    'widths=[8 9 10 12]'
+};
+t.maxExpand = 7;
+tasks{end+1} = t;
+
+% --- capsuleEnhance single ------------------------------------------------
+t.name = 'capsule(single)';  t.tag = 'capS-WS';
+t.fn   = @(I, p) capsuleEnhance(I, p);
+t.cfgs = {
+    struct('lengths',[8 12 16],      'width',6,'orientations',8, 'mode','single','normalize',true),
+    struct('lengths',[12 16 20],     'width',8,'orientations',8, 'mode','single','normalize',true),
+    struct('lengths',[12 16 20 28],  'width',8,'orientations',8, 'mode','single','normalize',true)
+};
+t.cfgDescs = {
+    'lens=[8 12 16] w=6 or=8',
+    'lens=[12 16 20] w=8 or=8',
+    'lens=[12 16 20 28] w=8 or=8'
+};
+t.maxExpand = 5;
+tasks{end+1} = t;
+
+% --- capsuleEnhance DoC ---------------------------------------------------
+t.name = 'capsule(DoC)';  t.tag = 'capD-WS';
+t.fn   = @(I, p) capsuleEnhance(I, p);
+t.cfgs = {
+    struct('lengths',[8 12 16 20],       'width',6,'wideWidth',14,'alpha',0.55,'orientations',8,'mode','doc','normalize',true),
+    struct('lengths',[12 16 20 28],      'width',8,'wideWidth',18,'alpha',0.55,'orientations',8,'mode','doc','normalize',true),
+    struct('lengths',[12 16 20 28 36 40],'width',8,'wideWidth',18,'alpha',0.55,'orientations',8,'mode','doc','normalize',true)
+};
+t.cfgDescs = {
+    'lens=[8..20] w=6 wW=14 or=8',
+    'lens=[12..28] w=8 wW=18 or=8',
+    'lens=[12..40] w=8 wW=18 or=8'
+};
+t.maxExpand = 5;
+tasks{end+1} = t;
+
+% --- rodGranulometryEnhance -----------------------------------------------
+t.name = 'rodGranulometry';  t.tag = 'rod-WS';
+t.fn   = @(I, p) rodGranulometryEnhance(I, p);
+t.cfgs = {
+    struct('lengths',[4 8 12],          'orientations',8, 'normalize',true),
+    struct('lengths',[8 12 16 20],      'orientations',8, 'normalize',true),
+    struct('lengths',[8 12 16 20 28 36],'orientations',8, 'normalize',true)
+};
+t.cfgDescs = {
+    'lens=[4 8 12] or=8',
+    'lens=[8 12 16 20] or=8',
+    'lens=[8 12 16 20 28 36] or=8'
+};
+t.maxExpand = 8;
+tasks{end+1} = t;
+end
+
+
+function [f1, prec, rec, iou] = evalBinary(BW, GT)
+% evalBinary  Pixel-level binary segmentation metrics vs ground truth.
+BW = logical(BW);  GT = logical(GT);
+TP = nnz( BW &  GT);
+FP = nnz( BW & ~GT);
+FN = nnz(~BW &  GT);
+prec = TP / max(1, TP + FP);
+rec  = TP / max(1, TP + FN);
+f1   = 2 * prec * rec / max(eps, prec + rec);
+iou  = TP / max(1, TP + FP + FN);
+end
+
+
+function s = wsDesc(ws)
+% wsDesc  Short string describing a watershed parameter set.
+if isempty(ws.threshLow)
+    s = sprintf('thr=%.2f h=%.2f minA=%d', ws.threshold, ws.hMinima, ws.minArea);
+else
+    s = sprintf('thr=%.2f lo=%.2f h=%.2f minA=%d', ...
+                ws.threshold, ws.threshLow, ws.hMinima, ws.minArea);
+end
 end
