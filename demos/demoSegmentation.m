@@ -15,8 +15,9 @@
 %   Fig 1 — logEnhance sweep        (best WS per config vs GT)
 %   Fig 2 — fiberEnhance sweep
 %   Fig 3 — capsule(single) sweep
-%   Fig 4 — capsule(DoC) sweep
+%   Fig 4 — capsule(DoC) sweep      (3-row grid: wideWidth x alpha)
 %   Fig 5 — rodGranulometry sweep
+%   Fig 6 — HSV overlay summary     (hue=label, value=image intensity)
 %
 % REQUIREMENTS
 %   localThresholdFast.m and watershedSegment.m (Segmentation_sandbox/src)
@@ -28,10 +29,14 @@
 clear; clc; close all;
 
 % =========================================================================
-% CONFIGURATION  ← adjust this path for your machine
+% CONFIGURATION  ← adjust these paths/flags for your machine
 % =========================================================================
 % Directory containing BlobFilters enhancer .m files.
 blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src';
+
+% Set true to export all figures as PDF to outDir (for LaTeX manual).
+doExport = false;
+outDir   = fullfile(blobFunctionPath, '..', 'docs', 'figures');
 
 % =========================================================================
 % Path setup
@@ -223,23 +228,34 @@ for ti = 1:nTasks
 
     [bestF1overall, iBest] = max(bestF1PerCfg);
 
-    % Figure: Raw | cfg1-bestWS | cfg2-bestWS | ... | Cellpose GT
-    panels      = [{Ireal}, cellfun(@labelRGB, bestLabelsPerCfg, 'UniformOutput',false), {cpRGB}];
-    panelTitles = [{'Raw'}, bestDescPerCfg, {sprintf('Cellpose GT\n(n=%d)', nCP)}];
-    cmaps       = [{'gray'}, repmat({[]}, 1, nCfgs), {[]}];
-
-    figNum = ti;
-    figW   = max(900, 250 * (nCfgs + 2));   % 250 px/panel; grows for DoC sweep
-    figure(figNum);
-    set(gcf, 'Name', sprintf('%s sweep', tk.name), 'NumberTitle','off', ...
-             'Color','k', 'Position',[30, 50, figW, 360]);
-    segFillFigure(figNum, panels, ...
-        sprintf('%s — best WS per config  |  best: %s, F1=%.3f  |  GT: %s', ...
-                tk.name, tk.cfgDescs{iBest}, bestF1overall, gtLabel), ...
-        panelTitles, cmaps);
-
     overallBestLabels{ti} = bestLabelsPerCfg{iBest};
     overallBestF1(ti)     = bestF1overall;
+
+    figNum   = ti;
+    figTitle = sprintf('%s — best WS per config  |  best: %s, F1=%.3f  |  GT: %s', ...
+                       tk.name, tk.cfgDescs{iBest}, bestF1overall, gtLabel);
+
+    if isfield(tk, 'gridRows')
+        % DoC sweep: block layout (rows=wideWidth, cols=Raw+alphas+GT)
+        docGridFigure(figNum, Ireal, cpRGB, bestLabelsPerCfg, bestF1PerCfg, ...
+                      bestDescPerCfg, tk, gtLabel, nCP);
+    else
+        % Standard layout: Raw | cfg1 | cfg2 | ... | GT  (single row)
+        panels      = [{Ireal}, cellfun(@labelRGB, bestLabelsPerCfg, 'UniformOutput',false), {cpRGB}];
+        panelTitles = [{'Raw'}, bestDescPerCfg, {sprintf('Cellpose GT\n(n=%d)', nCP)}];
+        cmaps       = [{'gray'}, repmat({[]}, 1, nCfgs), {[]}];
+        figW        = max(900, 250 * (nCfgs + 2));
+        figure(figNum);
+        set(gcf, 'Name', sprintf('%s sweep', tk.name), 'NumberTitle','off', ...
+                 'Color','k', 'Position',[30, 50, figW, 360]);
+        segFillFigure(figNum, panels, figTitle, panelTitles, cmaps);
+    end
+
+    if doExport
+        fname = sprintf('demoSeg_%s.pdf', strrep(tk.tag, '-', '_'));
+        exportgraphics(figure(figNum), fullfile(outDir, fname), 'ContentType','vector');
+        fprintf('  Exported: %s\n', fname);
+    end
 
     fprintf('  >> Best overall: config %d (%s)  F1=%.4f\n', ...
             iBest, tk.cfgDescs{iBest}, bestF1overall);
@@ -268,6 +284,12 @@ set(gcf, 'Name','HSV overlay — hue=label, value=image', 'NumberTitle','off', .
 segFillFigure(figHSV, hsvPanels, ...
     sprintf('HSV overlay: hue=label  value=image intensity  |  GT: %s', gtLabel), ...
     hsvTitles, repmat({[]}, 1, nTasks+2));
+
+if doExport
+    exportgraphics(figure(figHSV), fullfile(outDir, 'demoSeg_HSV_overlay.pdf'), ...
+                   'ContentType','vector');
+    fprintf('  Exported: demoSeg_HSV_overlay.pdf\n');
+end
 
 fprintf('Fig %d (HSV overlay) generated.\n', figHSV);
 fprintf('\nDone. %d figures generated.\n', nTasks + 1);
@@ -333,6 +355,64 @@ for k = 1:N
     set(ax, 'XColor','none', 'YColor','none');
 end
 sgtitle(figTitle, 'Color','w', 'FontSize',11, 'FontWeight','bold', 'Interpreter','none');
+end
+
+
+function docGridFigure(figNum, Ireal, cpRGB, bestLabelsPerCfg, bestF1PerCfg, ...
+                       bestDescPerCfg, tk, gtLabel, nCP)
+% docGridFigure  Block figure for 2-D parameter sweeps (e.g. DoC wideWidth x alpha).
+%   Rows = tk.gridRows values (e.g. wideWidth), columns = Raw + tk.gridCols + GT.
+nWW   = numel(tk.gridRows);
+nAlph = numel(tk.gridCols);
+nCols = nAlph + 2;             % Raw | alpha_1 .. alpha_n | GT
+
+[~, iBest] = max(bestF1PerCfg);
+
+figure(figNum);
+set(gcf, 'Name', sprintf('%s sweep', tk.name), 'NumberTitle','off', ...
+         'Color','k', 'Position',[30, 50, 260*nCols, 260*nWW + 60]);
+
+tl = tiledlayout(nWW, nCols, 'TileSpacing','tight', 'Padding','compact');
+tl.BackgroundColor = 'k';
+title(tl, sprintf('%s — wideWidth (rows) x alpha (cols)  |  best: %s, F1=%.3f  |  GT: %s', ...
+                  tk.name, tk.cfgDescs{iBest}, bestF1PerCfg(iBest), gtLabel), ...
+     'Color','w', 'FontSize',11, 'FontWeight','bold', 'Interpreter','none');
+
+for wi = 1:nWW
+    % Column 1: Raw image (labelled with wideWidth for this row)
+    ax = nexttile;
+    imshow(Ireal, []);  colormap(ax, 'gray');
+    title(ax, sprintf('Raw\nwW=%d', tk.gridRows(wi)), ...
+          'Color','w', 'FontSize',9, 'Interpreter','none');
+    set(ax, 'XColor','none', 'YColor','none');
+
+    % Columns 2..nAlph+1: one per alpha value
+    for ai = 1:nAlph
+        ci  = (wi-1)*nAlph + ai;   % config index (wW outer, alpha inner)
+        ax  = nexttile;
+        imshow(labelRGB(bestLabelsPerCfg{ci}));
+        if wi == 1
+            ttl = sprintf('a=%.1f\nF1=%.3f  n=%d', ...
+                          tk.gridCols(ai), bestF1PerCfg(ci), max(bestLabelsPerCfg{ci}(:)));
+        else
+            ttl = sprintf('F1=%.3f  n=%d', ...
+                          bestF1PerCfg(ci), max(bestLabelsPerCfg{ci}(:)));
+        end
+        title(ax, ttl, 'Color','w', 'FontSize',9, 'Interpreter','none');
+        set(ax, 'XColor','none', 'YColor','none');
+    end
+
+    % Last column: Cellpose GT
+    ax = nexttile;
+    imshow(cpRGB);
+    if wi == 1
+        title(ax, sprintf('Cellpose GT\n(n=%d)', nCP), ...
+              'Color','w', 'FontSize',9, 'Interpreter','none');
+    else
+        title(ax, sprintf('(n=%d)', nCP), 'Color','w', 'FontSize',9, 'Interpreter','none');
+    end
+    set(ax, 'XColor','none', 'YColor','none');
+end
 end
 
 
@@ -412,6 +492,8 @@ for ww = wideWidths
         t.cfgDescs{end+1} = sprintf('wW=%d a=%.1f', ww, al);
     end
 end
+t.gridRows  = wideWidths;   % rows of block figure (one per wideWidth value)
+t.gridCols  = alphas;       % cols of block figure (one per alpha value)
 t.maxExpand = 5;
 tasks{end+1} = t;
 
