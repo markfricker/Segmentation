@@ -157,27 +157,18 @@ Ism = orientedGaussSmooth(Ireal, pOGS);
 fprintf('%.1fs\n', toc);
 
 % =========================================================================
-% 4.  Watershed sweep grid
+% 4.  Watershed sweep grid (shared params; thresholds are per-task below)
 % =========================================================================
-thresholds    = [0.20 0.25 0.30 0.35 0.40];
 hMinimaVals   = [0.02 0.05 0.10];
 minAreaVals   = [20 50];
-threshLowVals = {[], 0.10, 0.15};   % [] = single-threshold; values = hysteresis low
 
-wsGrid = {};
-for thr = thresholds
-    for hm = hMinimaVals
-        for ma = minAreaVals
-            for tli = 1:numel(threshLowVals)
-                tl = threshLowVals{tli};
-                if ~isempty(tl) && tl >= thr, continue; end   % low must be < high
-                wsGrid{end+1} = struct('threshold',thr,'hMinima',hm, ...
-                                       'minArea',ma,'threshLow',tl); %#ok<SAGROW>
-            end
-        end
-    end
-end
-nWS = numel(wsGrid);
+% Default threshold/hysteresis ranges
+wsThreshDef     = [0.20 0.25 0.30 0.35 0.40];
+wsThreshLowDef  = {[], 0.10, 0.15};   % [] = no hysteresis; values = hysteresis low
+
+% Capsule enhancers need higher thresholds and no hysteresis (picks up background)
+wsThreshHigh    = [0.30 0.35 0.40 0.45 0.50];
+wsThreshLowNone = {[]};
 
 % =========================================================================
 % 5.  Enhancer task definitions
@@ -193,11 +184,23 @@ nWS = numel(wsGrid);
 tasks  = buildTasks();
 nTasks = numel(tasks);
 
+% Assign per-task watershed threshold / hysteresis ranges
+for ti = 1:nTasks
+    switch tasks{ti}.tag
+        case {'capS-WS', 'capD-WS'}
+            tasks{ti}.wsThresholds = wsThreshHigh;
+            tasks{ti}.wsThreshLow  = wsThreshLowNone;
+        otherwise
+            tasks{ti}.wsThresholds = wsThreshDef;
+            tasks{ti}.wsThreshLow  = wsThreshLowDef;
+    end
+end
+
 % =========================================================================
 % 6.  Main sweep
 % =========================================================================
-fprintf('\n=== Parameter sweep (%d enhancer configs x %d WS combos) ===\n', ...
-        sum(cellfun(@(t) numel(t.cfgs), tasks)), nWS);
+fprintf('\n=== Parameter sweep (%d enhancer configs, per-task WS grids) ===\n', ...
+        sum(cellfun(@(t) numel(t.cfgs), tasks)));
 
 results     = cell(nTasks, 1);   % best result struct per task
 bestLabels  = cell(nTasks, 1);   % best label image per task
@@ -209,8 +212,25 @@ labelsStd   = cell(nTasks, 1);   % best standard-threshold label image per task
 
 for ti = 1:nTasks
     tk = tasks{ti};
+
+    % Build task-specific watershed grid
+    wsGridTask = {};
+    for thr = tk.wsThresholds
+        for hm = hMinimaVals
+            for ma = minAreaVals
+                for tli = 1:numel(tk.wsThreshLow)
+                    tl = tk.wsThreshLow{tli};
+                    if ~isempty(tl) && tl >= thr, continue; end
+                    wsGridTask{end+1} = struct('threshold',thr,'hMinima',hm, ...
+                                               'minArea',ma,'threshLow',tl); %#ok<SAGROW>
+                end
+            end
+        end
+    end
+    nWSTask = numel(wsGridTask);
+
     fprintf('\n--- %s (%d configs x %d WS = %d evals) ---\n', ...
-            tk.name, numel(tk.cfgs), nWS, numel(tk.cfgs)*nWS);
+            tk.name, numel(tk.cfgs), nWSTask, numel(tk.cfgs)*nWSTask);
 
     emptyRes = struct('f1',0,'prec',0,'rec',0,'iou',0, ...
                       'enhIdx',1,'wsIdx',1,'enhDesc','','wsDesc','');
@@ -234,10 +254,10 @@ for ti = 1:nTasks
             continue;
         end
 
-        fprintf('    Sweeping %d watershed combos: ', nWS);
+        fprintf('    Sweeping %d watershed combos: ', nWSTask);
         t0 = tic;
-        for wi = 1:nWS
-            ws = wsGrid{wi};
+        for wi = 1:nWSTask
+            ws = wsGridTask{wi};
             try
                 [BW, L] = watershedSegment(R, ...
                     'method',      'marker', ...
