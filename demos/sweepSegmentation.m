@@ -166,9 +166,9 @@ minAreaVals   = [20 50];
 wsThreshDef     = [0.20 0.25 0.30 0.35 0.40];
 wsThreshLowDef  = {[], 0.10, 0.15};   % [] = no hysteresis; values = hysteresis low
 
-% Capsule enhancers need higher thresholds and no hysteresis (picks up background)
+% Capsule enhancers need higher thresholds and raised hysteresis low values
 wsThreshHigh    = [0.30 0.35 0.40 0.45 0.50];
-wsThreshLowNone = {[]};
+wsThreshLowHigh = {[], 0.20, 0.25};   % raised lower thresholds for capsule enhancers
 
 % =========================================================================
 % 5.  Enhancer task definitions
@@ -189,7 +189,7 @@ for ti = 1:nTasks
     switch tasks{ti}.tag
         case {'capS-WS', 'capD-WS'}
             tasks{ti}.wsThresholds = wsThreshHigh;
-            tasks{ti}.wsThreshLow  = wsThreshLowNone;
+            tasks{ti}.wsThreshLow  = wsThreshLowHigh;
         otherwise
             tasks{ti}.wsThresholds = wsThreshDef;
             tasks{ti}.wsThreshLow  = wsThreshLowDef;
