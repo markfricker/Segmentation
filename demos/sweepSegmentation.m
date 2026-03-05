@@ -26,41 +26,32 @@
 %   IoU        =  |WS∩CP| / |WS∪CP|
 %
 % FIGURES PRODUCED
-%   Fig 1 — Best watershed result per enhancer vs Cellpose (full FOV)
+%   Fig 1 — Best watershed result per enhancer vs Cellpose (full image)
 %           Raw | log-WS | fib-WS | capS-WS | capD-WS | rod-WS | CP
-%   Fig 2 — Zoom cluster 1   (same 7 columns)
-%   Fig 3 — Zoom cluster 2   (same 7 columns)
-%   Fig 4 — Refinement comparison — full FOV
+%   Fig 2 — Refinement comparison (full image)
 %           Raw | best-WS | +chanvese | +dilate | Cellpose GT
-%   Fig 5 — Refinement comparison — zoom cluster 1
-%   Fig 6 — Refinement comparison — zoom cluster 2
-%   Fig 7 — Hysteresis spotlight — full FOV
+%   Fig 3 — Hysteresis spotlight (full image)
 %           Raw | best-std-WS | best-hyst-WS | Cellpose GT
-%   Fig 8 — Hysteresis spotlight — zoom cluster 1
-%   Fig 9 — Hysteresis spotlight — zoom cluster 2
-%   Fig 10 — Cellpose GT model comparison — full FOV
-%            Raw | cyto3 | cyto3 niter=2000 | bact_fluor_cp3 | ...
-%   Fig 11 — GT model comparison — zoom cluster 1
-%   Fig 12 — GT model comparison — zoom cluster 2
 %
 % CONSOLE OUTPUT
 %   Ranked table of best watershed parameters per enhancer.
-%   Refinement comparison table: WS → chanvese → dilate metrics.
+%   Refinement comparison table: WS -> chanvese -> dilate metrics.
 %   Hysteresis comparison table: std WS vs best hysteresis WS per enhancer.
-%   GT comparison summary: object counts and coverage per Cellpose model.
 %
 % REQUIREMENTS
 %   localThresholdFast.m, watershedSegment.m, refineSegment.m on path.
 %   BlobFilters enhancers and cellposeEnhance on path (set blobFunctionPath).
 %   Cellpose add-on + Python cellpose for ground-truth generation.
 %   Image Processing Toolbox (including activecontour for Chan-Vese).
+%   mitImagecrop.mat in BlobFilters_sandbox/demos/.
 %
 % NOTE ON RUNTIME
 %   Enhancement computation dominates (~2-4 min total).
 %   Watershed sweep (~1440 calls with hysteresis grid) adds ~2-3 min.
 %   Chan-Vese refinement: ~5-30 s per enhancer depending on object count.
-%   Total: ~8-12 min.  If cpL already exists in the workspace (from
-%   demoSegmentation), Cellpose will not be re-run.
+%   Total: ~8-12 min.  If cpL already exists in the workspace (from a
+%   previous run), Cellpose will not be re-run.  Clear cpL from the
+%   workspace if any GT parameters (including cpMinSize) have changed.
 
 clear; clc; close all;
 
@@ -68,28 +59,16 @@ clear; clc; close all;
 % CONFIGURATION
 % =========================================================================
 blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src';
-blobImagePath    = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src\.claude\worktrees\thirsty-wescoff\demos';
 
-roi1 = [100  80  220 220];   % zoom cluster 1  [x y w h]
-roi2 = [330 220  220 220];   % zoom cluster 2
-
-% ---- Cellpose ground-truth configurations -----------------------------------
-% Set cpGTidx to select which config is used as GT for the sweep metrics.
-% All configs are run and compared in the GT comparison figures (Figs 10-12).
-% If you change cpGTidx, clear 'cpL' from the workspace to force a rerun.
-%
-% Optimal settings determined by sweepCellpose (2026-03-03):
-%   cyto3, cellProb=0, flowThreshold=0.8, nIter=0 (default ~200)
-%   bact_fluor_cp3 performed worse; nIter=2000 gave no improvement.
-cpGTconfigs = { ...
-    struct('model','cyto3', 'diameter',10, 'cellProb', 0, ...
-           'flowThreshold',0.8, 'nIter',0, 'label','cyto3 cp=0 ft=0.8'), ...
-    struct('model','cyto3', 'diameter',10, 'cellProb',-1, ...
-           'flowThreshold',0.8, 'nIter',0, 'label','cyto3 cp=-1 ft=0.8'), ...
-    struct('model','cyto3', 'diameter',10, 'cellProb',-2, ...
-           'flowThreshold',0.8, 'nIter',0, 'label','cyto3 cp=-2 (prev default)'), ...
-};
-cpGTidx = 1;   % which config is the sweep ground truth (1-indexed)
+% ---- Cellpose ground-truth parameters ------------------------------------
+% Optimal settings from sweepCellpose (2026-03-04):
+%   cyto3, diameter=10, cellProb=0, flowThreshold=0.8, nIter=0, minSize=64
+cpGTmodel         = 'cyto3';
+cpGTdiameter      = 10;
+cpGTcellProb      = 0;
+cpGTflowThreshold = 0.8;
+cpGTnIter         = 0;
+cpMinSize         = 64;   % px^2 post-filter; must match sweepCellpose setting
 
 % ---- refinement parameters (section 9) ----------------------------------
 % maxExpand is set per-enhancer inside buildTasks() — tune it there.
@@ -113,47 +92,42 @@ if ~hasBlobFilters
 end
 
 % =========================================================================
-% 1.  Load real mitochondrial image
+% 1.  Load cropped mitochondrial image
 % =========================================================================
 fprintf('=== Loading image ===\n');
-mitoMat = fullfile(blobImagePath, 'mitImage.mat');
-mitoImg = fullfile(blobImagePath, 'Ireal.png');
+mitoMat = fullfile(blobFunctionPath, '..', 'demos', 'mitImagecrop.mat');
 
 if exist(mitoMat, 'file')
     tmp   = load(mitoMat, 'I');
     Ireal = im2single(tmp.I);
-    fprintf('  Loaded mitImage.mat  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
-elseif exist(mitoImg, 'file')
-    Ireal = im2single(imread(mitoImg));
-    if size(Ireal,3) > 1, Ireal = rgb2gray(Ireal); end
-    fprintf('  Loaded Ireal.png  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
+    fprintf('  Loaded mitImagecrop.mat  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
 else
     error('sweepSegmentation:noImage', ...
-          'Image not found. Check blobImagePath.');
+          'mitImagecrop.mat not found at:\n  %s', mitoMat);
 end
 
 % =========================================================================
 % 2.  Cellpose ground truth
-%     Reuse from workspace if already computed (e.g. from demoSegmentation).
+%     Reuse cpL from workspace if it already exists and matches image size.
+%     Clear cpL from workspace if any GT parameters (incl. cpMinSize) change.
 % =========================================================================
 fprintf('\n=== Cellpose ground truth ===\n');
-hasCellpose = exist('cellpose','file') ~= 0;
-
-gtCfg = cpGTconfigs{cpGTidx};   % selected GT configuration
-fprintf('  GT config: %s\n', gtCfg.label);
+fprintf('  model=%s  diameter=%d  cellProb=%d  flowThreshold=%.1f  nIter=%d  minSize=%d\n', ...
+        cpGTmodel, cpGTdiameter, cpGTcellProb, cpGTflowThreshold, cpGTnIter, cpMinSize);
 
 if evalin('base','exist(''cpL'',''var'')') && ...
         isequal(size(evalin('base','cpL')), size(Ireal))
-    cpL  = evalin('base', 'cpL');
+    cpL = evalin('base', 'cpL');
     fprintf('  Reusing cpL from workspace  (n=%d objects)\n', max(cpL(:)));
-    fprintf('  NOTE: if cpGTidx was changed, clear cpL from workspace to rerun.\n');
-elseif hasCellpose
-    pCP.model         = gtCfg.model;
-    pCP.diameter      = gtCfg.diameter;
-    pCP.cellProb      = gtCfg.cellProb;
-    pCP.flowThreshold = gtCfg.flowThreshold;
-    pCP.nIter         = gtCfg.nIter;
-    fprintf('  Running cellposeEnhance (%s, nIter=%d)...  ', gtCfg.model, gtCfg.nIter);
+    fprintf('  NOTE: clear cpL if GT parameters or cpMinSize have changed.\n');
+elseif exist('cellpose', 'file') ~= 0
+    pCP.model         = cpGTmodel;
+    pCP.diameter      = cpGTdiameter;
+    pCP.cellProb      = cpGTcellProb;
+    pCP.flowThreshold = cpGTflowThreshold;
+    pCP.nIter         = cpGTnIter;
+    pCP.minSize       = cpMinSize;
+    fprintf('  Running cellposeEnhance...  ');
     try
         tic;
         [~, cpL] = cellposeEnhance(Ireal, pCP);
@@ -167,83 +141,9 @@ else
           'Cellpose add-on not installed. Cannot generate ground truth.');
 end
 
-cpBW = logical(cpL > 0);   % binary ground-truth mask
+cpBW  = logical(cpL > 0);   % binary ground-truth mask
 cpRGB = labelRGB(cpL);
 nCP   = max(cpL(:));
-
-% =========================================================================
-% 2b. Cellpose GT model comparison
-%     Runs all cpGTconfigs and shows side-by-side in Figs 10-12.
-%     Use this to decide which GT model best captures your data before
-%     committing to a sweep GT by changing cpGTidx.
-% =========================================================================
-fprintf('\n=== Cellpose GT model comparison ===\n');
-nGTcfgs  = numel(cpGTconfigs);
-cpGT_L   = cell(nGTcfgs, 1);     % label images per config
-cpGT_L{cpGTidx} = cpL;           % primary GT already computed
-
-for gi = 1:nGTcfgs
-    if gi == cpGTidx, continue; end
-    cfg_i = cpGTconfigs{gi};
-    fprintf('  Config %d (%s)...  ', gi, cfg_i.label);
-    pCPi.model         = cfg_i.model;
-    pCPi.diameter      = cfg_i.diameter;
-    pCPi.cellProb      = cfg_i.cellProb;
-    pCPi.flowThreshold = cfg_i.flowThreshold;
-    pCPi.nIter         = cfg_i.nIter;
-    try
-        tic;
-        [~, cpGT_L{gi}] = cellposeEnhance(Ireal, pCPi);
-        fprintf('%.1fs  n=%d\n', toc, max(cpGT_L{gi}(:)));
-    catch ME
-        fprintf('FAILED (%s)\n', ME.message);
-        cpGT_L{gi} = zeros(size(Ireal), 'uint16');
-    end
-end
-
-% Console summary
-fprintf('\n  Model comparison summary:\n');
-fprintf('  %-3s  %-25s  %6s  %8s\n', 'Idx', 'Label', 'n obj', 'coverage%');
-for gi = 1:nGTcfgs
-    n_gi  = max(cpGT_L{gi}(:));
-    cov_gi = 100 * nnz(cpGT_L{gi} > 0) / numel(cpGT_L{gi});
-    marker = '';
-    if gi == cpGTidx, marker = ' <-- sweep GT'; end
-    fprintf('  %-3d  %-25s  %6d  %8.2f%%%s\n', gi, cpGTconfigs{gi}.label, n_gi, cov_gi, marker);
-end
-fprintf('\n');
-
-% Build comparison figure panels: Raw | config 1 | config 2 | config 3 | ...
-gtCompTitles = {'Raw'};
-for gi = 1:nGTcfgs
-    n_gi = max(cpGT_L{gi}(:));
-    mkr = '';  if gi == cpGTidx, mkr = ' (GT)'; end
-    gtCompTitles{end+1} = sprintf('%s%s\nn=%d', cpGTconfigs{gi}.label, mkr, n_gi); %#ok<SAGROW>
-end
-gtCompPanels = [{Ireal}, cellfun(@labelRGB, cpGT_L(:)', 'UniformOutput', false)];
-gtCompCmaps  = [{'gray'}, repmat({[]}, 1, nGTcfgs)];
-
-figure(10);
-set(gcf,'Name','Cellpose GT model comparison — full FOV','NumberTitle','off', ...
-        'Color','k','Position',[60 700 1820 340]);
-segFillFigure(10, gtCompPanels, 'Cellpose GT model comparison — full FOV', ...
-    gtCompTitles, gtCompCmaps);
-
-figure(11);
-set(gcf,'Name','Cellpose GT model comparison — zoom 1','NumberTitle','off', ...
-        'Color','k','Position',[60 360 1820 340]);
-segFillFigure(11, cellfun(@(p) imcrop(p,roi1), gtCompPanels, 'UniformOutput',false), ...
-    sprintf('GT comparison — zoom 1  [x=%d y=%d %dx%d]', roi1(1),roi1(2),roi1(3),roi1(4)), ...
-    gtCompTitles, gtCompCmaps);
-
-figure(12);
-set(gcf,'Name','Cellpose GT model comparison — zoom 2','NumberTitle','off', ...
-        'Color','k','Position',[60 20 1820 340]);
-segFillFigure(12, cellfun(@(p) imcrop(p,roi2), gtCompPanels, 'UniformOutput',false), ...
-    sprintf('GT comparison — zoom 2  [x=%d y=%d %dx%d]', roi2(1),roi2(2),roi2(3),roi2(4)), ...
-    gtCompTitles, gtCompCmaps);
-
-fprintf('GT comparison done. Figs 10-12 generated.\n');
 
 % =========================================================================
 % 3.  OGS preprocessing
@@ -286,9 +186,10 @@ nWS = numel(wsGrid);
 %                .fn    (function handle: fn(Ism, cfg) -> R)
 %                .cfgs  (cell array of parameter structs)
 %                .cfgDescs (cell array of description strings)
+%                .maxExpand (px; passed to refineSegment)
 % =========================================================================
 
-tasks = buildTasks();
+tasks  = buildTasks();
 nTasks = numel(tasks);
 
 % =========================================================================
@@ -297,13 +198,13 @@ nTasks = numel(tasks);
 fprintf('\n=== Parameter sweep (%d enhancer configs x %d WS combos) ===\n', ...
         sum(cellfun(@(t) numel(t.cfgs), tasks)), nWS);
 
-results    = cell(nTasks, 1);   % best result struct per task
-bestLabels = cell(nTasks, 1);   % best label image per task
-bestEnhMap = cell(nTasks, 1);   % best enhancement map per task
-resultsHyst = cell(nTasks, 1);  % best hysteresis-only result per task
-labelsHyst  = cell(nTasks, 1);  % best hysteresis label image per task
-resultsStd  = cell(nTasks, 1);  % best standard-threshold result per task
-labelsStd   = cell(nTasks, 1);  % best standard-threshold label image per task
+results     = cell(nTasks, 1);   % best result struct per task
+bestLabels  = cell(nTasks, 1);   % best label image per task
+bestEnhMap  = cell(nTasks, 1);   % best enhancement map per task
+resultsHyst = cell(nTasks, 1);   % best hysteresis-only result per task
+labelsHyst  = cell(nTasks, 1);   % best hysteresis label image per task
+resultsStd  = cell(nTasks, 1);   % best standard-threshold result per task
+labelsStd   = cell(nTasks, 1);   % best standard-threshold label image per task
 
 for ti = 1:nTasks
     tk = tasks{ti};
@@ -312,9 +213,9 @@ for ti = 1:nTasks
 
     emptyRes = struct('f1',0,'prec',0,'rec',0,'iou',0, ...
                       'enhIdx',1,'wsIdx',1,'enhDesc','','wsDesc','');
-    best     = emptyRes;
-    bestHyst = emptyRes;
-    bestStd  = emptyRes;
+    best      = emptyRes;
+    bestHyst  = emptyRes;
+    bestStd   = emptyRes;
     bestL     = zeros(size(Ireal), 'uint16');
     bestR     = zeros(size(Ireal), 'single');
     bestHystL = zeros(size(Ireal), 'uint16');
@@ -388,10 +289,12 @@ end
 % 7.  Summary table
 % =========================================================================
 fprintf('\n');
-printTable(tasks, results, nCP, gtCfg.label);
+gtLabel = sprintf('%s cp=%d ft=%.1f minSize=%d', ...
+                  cpGTmodel, cpGTcellProb, cpGTflowThreshold, cpMinSize);
+printTable(tasks, results, nCP, gtLabel);
 
 % =========================================================================
-% 8.  Figures
+% 8.  Figure 1 — Best watershed result per enhancer
 % =========================================================================
 panelTitles = {'Raw'};
 for ti = 1:nTasks
@@ -400,32 +303,16 @@ for ti = 1:nTasks
 end
 panelTitles{end+1} = sprintf('Cellpose GT\n(n=%d)', nCP);
 panelCmaps = [{'gray'}, repmat({[]}, 1, nTasks), {[]}];
-
-% bestLabels is Nx1; transpose to row before cellfun so horzcat works
 panels = [{Ireal}, cellfun(@labelRGB, bestLabels(:)', 'UniformOutput', false), {cpRGB}];
 
 figure(1);
-set(gcf,'Name','Best result per enhancer — full FOV','NumberTitle','off', ...
+set(gcf,'Name','Best result per enhancer','NumberTitle','off', ...
         'Color','k','Position',[30 680 1820 340]);
 segFillFigure(1, panels, ...
-    sprintf('Best marker-WS per enhancer vs Cellpose GT (n=%d) — full FOV', nCP), ...
+    sprintf('Best marker-WS per enhancer vs Cellpose GT (n=%d)', nCP), ...
     panelTitles, panelCmaps);
 
-figure(2);
-set(gcf,'Name','Best result per enhancer — zoom 1','NumberTitle','off', ...
-        'Color','k','Position',[30 340 1820 340]);
-segFillFigure(2, cellfun(@(p) imcrop(p,roi1), panels, 'UniformOutput',false), ...
-    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d]', roi1(1),roi1(2),roi1(3),roi1(4)), ...
-    panelTitles, panelCmaps);
-
-figure(3);
-set(gcf,'Name','Best result per enhancer — zoom 2','NumberTitle','off', ...
-        'Color','k','Position',[30 0 1820 340]);
-segFillFigure(3, cellfun(@(p) imcrop(p,roi2), panels, 'UniformOutput',false), ...
-    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d]', roi2(1),roi2(2),roi2(3),roi2(4)), ...
-    panelTitles, panelCmaps);
-
-fprintf('\nDone. 3 figures generated.\n');
+fprintf('\nFig 1 generated.\n');
 
 % =========================================================================
 % 8b.  Hysteresis vs standard comparison
@@ -433,7 +320,7 @@ fprintf('\nDone. 3 figures generated.\n');
 fprintf('\n');
 printHystTable(tasks, resultsStd, resultsHyst, nCP);
 
-% Figures 7-9: best hysteresis result per enhancer (parallel to Figs 1-3)
+% Figure 3 — Best hysteresis result per enhancer
 panelTitlesH = {'Raw'};
 for ti = 1:nTasks
     if resultsHyst{ti}.f1 > 0
@@ -448,28 +335,14 @@ panelTitlesH{end+1} = sprintf('Cellpose GT\n(n=%d)', nCP);
 panelCmapsH = [{'gray'}, repmat({[]}, 1, nTasks), {[]}];
 panelsH = [{Ireal}, cellfun(@labelRGB, labelsHyst(:)', 'UniformOutput', false), {cpRGB}];
 
-figure(7);
-set(gcf,'Name','Best hysteresis result per enhancer — full FOV','NumberTitle','off', ...
-        'Color','k','Position',[30 680 1820 340]);
-segFillFigure(7, panelsH, ...
-    sprintf('Best hysteresis-WS per enhancer vs Cellpose GT (n=%d) — full FOV', nCP), ...
-    panelTitlesH, panelCmapsH);
-
-figure(8);
-set(gcf,'Name','Best hysteresis result per enhancer — zoom 1','NumberTitle','off', ...
+figure(3);
+set(gcf,'Name','Best hysteresis result per enhancer','NumberTitle','off', ...
         'Color','k','Position',[30 340 1820 340]);
-segFillFigure(8, cellfun(@(p) imcrop(p,roi1), panelsH, 'UniformOutput',false), ...
-    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d]', roi1(1),roi1(2),roi1(3),roi1(4)), ...
+segFillFigure(3, panelsH, ...
+    sprintf('Best hysteresis-WS per enhancer vs Cellpose GT (n=%d)', nCP), ...
     panelTitlesH, panelCmapsH);
 
-figure(9);
-set(gcf,'Name','Best hysteresis result per enhancer — zoom 2','NumberTitle','off', ...
-        'Color','k','Position',[30 0 1820 340]);
-segFillFigure(9, cellfun(@(p) imcrop(p,roi2), panelsH, 'UniformOutput',false), ...
-    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d]', roi2(1),roi2(2),roi2(3),roi2(4)), ...
-    panelTitlesH, panelCmapsH);
-
-fprintf('Hysteresis figures done. Figs 7-9 generated.\n');
+fprintf('Fig 3 (hysteresis) generated.\n');
 
 % =========================================================================
 % 9.  Boundary refinement: apply refineSegment to each best WS result
@@ -516,16 +389,15 @@ fprintf('\n');
 printRefinementTable(tasks, results, resultsRef, refMethods, nCP);
 
 % =========================================================================
-% 11. Refinement figures — best overall WS result + both refinements
-%     (select the enhancer with the highest post-refinement chanvese F1)
+% 11. Figure 2 — Refinement comparison
+%     (select the enhancer with the highest post-chanvese F1)
 % =========================================================================
-% Find which task benefits most from chanvese refinement
-cvF1s    = cellfun(@(r) r.f1, resultsRef(:, 1));   % chanvese column
+cvF1s      = cellfun(@(r) r.f1, resultsRef(:, 1));
 [~, iBest] = max(cvF1s);
 
-bestTag   = tasks{iBest}.tag;
-L_ws_best = bestLabels{iBest};
-L_cv_best = refinedL{iBest, 1};
+bestTag    = tasks{iBest}.tag;
+L_ws_best  = bestLabels{iBest};
+L_cv_best  = refinedL{iBest, 1};
 L_dil_best = refinedL{iBest, 2};
 wsF1  = results{iBest}.f1;
 cvF1  = resultsRef{iBest, 1}.f1;
@@ -537,37 +409,18 @@ refPanelTitles = { ...
     sprintf('+chanvese\nF1=%.3f  (%+.3f)', cvF1,  cvF1  - wsF1), ...
     sprintf('+dilate\nF1=%.3f  (%+.3f)',   dilF1, dilF1 - wsF1), ...
     sprintf('Cellpose GT\n(n=%d)', nCP) };
-refCmaps = {'gray', [], [], [], []};
+refCmaps  = {'gray', [], [], [], []};
+refPanels = {Ireal, labelRGB(L_ws_best), labelRGB(L_cv_best), ...
+             labelRGB(L_dil_best), cpRGB};
 
-refPanels = { ...
-    Ireal, ...
-    labelRGB(L_ws_best), ...
-    labelRGB(L_cv_best), ...
-    labelRGB(L_dil_best), ...
-    cpRGB };
-
-figure(4);
-set(gcf,'Name','Refinement comparison — full FOV','NumberTitle','off', ...
-        'Color','k','Position',[30 680 1820 340]);
-segFillFigure(4, refPanels, ...
-    sprintf('Refinement  (%s): WS → Chan-Vese / Voronoi-dilate vs Cellpose GT', bestTag), ...
-    refPanelTitles, refCmaps);
-
-figure(5);
-set(gcf,'Name','Refinement comparison — zoom 1','NumberTitle','off', ...
-        'Color','k','Position',[30 340 1820 340]);
-segFillFigure(5, cellfun(@(p) imcrop(p, roi1), refPanels, 'UniformOutput', false), ...
-    sprintf('Zoom cluster 1  [x=%d y=%d %dx%d]', roi1(1),roi1(2),roi1(3),roi1(4)), ...
-    refPanelTitles, refCmaps);
-
-figure(6);
-set(gcf,'Name','Refinement comparison — zoom 2','NumberTitle','off', ...
+figure(2);
+set(gcf,'Name','Refinement comparison','NumberTitle','off', ...
         'Color','k','Position',[30 0 1820 340]);
-segFillFigure(6, cellfun(@(p) imcrop(p, roi2), refPanels, 'UniformOutput', false), ...
-    sprintf('Zoom cluster 2  [x=%d y=%d %dx%d]', roi2(1),roi2(2),roi2(3),roi2(4)), ...
+segFillFigure(2, refPanels, ...
+    sprintf('Refinement  (%s): WS -> Chan-Vese / Voronoi-dilate vs Cellpose GT', bestTag), ...
     refPanelTitles, refCmaps);
 
-fprintf('\nDone. 6 figures generated.\n');
+fprintf('\nDone. Figs 1-3 generated.\n');
 
 
 % =========================================================================
@@ -849,5 +702,5 @@ for k = 1:N
     title(panelTitles{k}, 'Color','w', 'FontSize',8, 'Interpreter','none');
     set(ax, 'XColor','none', 'YColor','none');
 end
-sgtitle(figTitle, 'Color','w', 'FontSize',11, 'FontWeight','bold');
+sgtitle(figTitle, 'Color','w', 'FontSize',11, 'FontWeight','bold', 'Interpreter','none');
 end
