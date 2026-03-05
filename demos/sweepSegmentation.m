@@ -98,8 +98,9 @@ fprintf('=== Loading image ===\n');
 mitoMat = fullfile(blobFunctionPath, '..', 'demos', 'mitImagecrop.mat');
 
 if exist(mitoMat, 'file')
-    tmp   = load(mitoMat, 'I');
-    Ireal = im2single(tmp.I);
+    tmp   = load(mitoMat);
+    flds  = fieldnames(tmp);
+    Ireal = im2single(tmp.(flds{1}));
     fprintf('  Loaded mitImagecrop.mat  (%d x %d px)\n', size(Ireal,2), size(Ireal,1));
 else
     error('sweepSegmentation:noImage', ...
