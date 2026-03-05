@@ -1,4 +1,4 @@
- and can we replace labels (full image)%%
+%%
 % sweepCellpose.m
 %
 % Sweep Cellpose hyperparameters to identify optimal settings for
@@ -288,7 +288,7 @@ for mi = 1:nM
 
         for ci = 1:nCP
             % Column 1: raw image annotated with cellProb value
-            ax = nexttile; %#ok<NASGU>
+            ax = nexttile; 
             imshow(Ireal, []);
             hold on;
             text(4, 6, sprintf('cp=%+d', cpVals(ci)), ...
@@ -301,7 +301,7 @@ for mi = 1:nM
 
             % Columns 2…nFT+1: labelled results
             for fi = 1:nFT
-                ax = nexttile; %#ok<NASGU>
+                ax = nexttile; 
                 Lk = L_mn{ci,fi};
                 if max(Lk(:)) > 0
                     rgb = label2rgb(Lk, 'hsv', 'k', 'shuffle');
