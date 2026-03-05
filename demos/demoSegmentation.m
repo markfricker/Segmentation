@@ -226,7 +226,7 @@ for ti = 1:nTasks
     cmaps       = [{'gray'}, repmat({[]}, 1, nCfgs), {[]}];
 
     figNum = ti;
-    figW   = max(900, 300 * (nCfgs + 2));
+    figW   = max(900, 250 * (nCfgs + 2));   % 250 px/panel; grows for DoC sweep
     figure(figNum);
     set(gcf, 'Name', sprintf('%s sweep', tk.name), 'NumberTitle','off', ...
              'Color','k', 'Position',[30, 50, figW, 360]);
@@ -275,86 +275,98 @@ end
 
 
 function tasks = buildTasks()
+% Configs tuned for mitochondria: width ~10 px, length ~15-50 px.
 tasks = {};
 
 % --- logEnhance -----------------------------------------------------------
+% LoG optimal sigma = radius/sqrt(2); cross-section radius ~5 px -> sigma ~3-4.
 t.name = 'logEnhance';  t.tag = 'log-WS';
 t.fn   = @(I, p) logEnhance(I, p);
 t.cfgs = {
-    struct('sigmas',[1 2 3],      'normalize',true),
-    struct('sigmas',[2 3 4 5],    'normalize',true),
-    struct('sigmas',[2 3 4 5 6],  'normalize',true),
-    struct('sigmas',[3 4 5 6 7],  'normalize',true)
+    struct('sigmas',[2 3 4],   'normalize',true),
+    struct('sigmas',[3 4 5],   'normalize',true),
+    struct('sigmas',[4 5 6],   'normalize',true),
+    struct('sigmas',[3 4 5 6], 'normalize',true)
 };
 t.cfgDescs = {
-    'sigmas=[1 2 3]',
-    'sigmas=[2 3 4 5]',
-    'sigmas=[2 3 4 5 6]',
-    'sigmas=[3 4 5 6 7]'
+    'sigmas=[2 3 4]',
+    'sigmas=[3 4 5]',
+    'sigmas=[4 5 6]',
+    'sigmas=[3 4 5 6]'
 };
 t.maxExpand = 4;
 tasks{end+1} = t;
 
 % --- fiberEnhance ---------------------------------------------------------
+% widths = short-axis width; target ~10 px.
 t.name = 'fiberEnhance';  t.tag = 'fib-WS';
 t.fn   = @(I, p) fiberEnhance(I, p);
 t.cfgs = {
-    struct('widths',[4 5 6 7],    'multimode','stack','normalize',true),
-    struct('widths',[6 7 8 9 10], 'multimode','stack','normalize',true),
-    struct('widths',[8 9 10 12],  'multimode','stack','normalize',true)
+    struct('widths',[8 9 10],       'multimode','stack','normalize',true),
+    struct('widths',[9 10 11 12],   'multimode','stack','normalize',true),
+    struct('widths',[10 12 14],     'multimode','stack','normalize',true)
 };
 t.cfgDescs = {
-    'widths=[4 5 6 7]',
-    'widths=[6 7 8 9 10]',
-    'widths=[8 9 10 12]'
+    'widths=[8 9 10]',
+    'widths=[9 10 11 12]',
+    'widths=[10 12 14]'
 };
 t.maxExpand = 7;
 tasks{end+1} = t;
 
 % --- capsuleEnhance single ------------------------------------------------
+% lengths = half-lengths; full length 15-50 px -> half-lengths 8-25 px.
+% orientations=12 (15 deg step) reduces angular discretisation artefacts.
 t.name = 'capsule(single)';  t.tag = 'capS-WS';
 t.fn   = @(I, p) capsuleEnhance(I, p);
 t.cfgs = {
-    struct('lengths',[8 12 16],      'width',6,'orientations',8,'mode','single','normalize',true),
-    struct('lengths',[12 16 20],     'width',8,'orientations',8,'mode','single','normalize',true),
-    struct('lengths',[12 16 20 28],  'width',8,'orientations',8,'mode','single','normalize',true)
+    struct('lengths',[8 12 16],    'width', 8,'orientations',12,'mode','single','normalize',true),
+    struct('lengths',[12 16 20],   'width',10,'orientations',12,'mode','single','normalize',true),
+    struct('lengths',[16 20 24],   'width',10,'orientations',12,'mode','single','normalize',true)
 };
 t.cfgDescs = {
-    'lens=[8 12 16] w=6 or=8',
-    'lens=[12 16 20] w=8 or=8',
-    'lens=[12 16 20 28] w=8 or=8'
+    'lens=[8 12 16] w=8 or=12',
+    'lens=[12 16 20] w=10 or=12',
+    'lens=[16 20 24] w=10 or=12'
 };
 t.maxExpand = 5;
 tasks{end+1} = t;
 
-% --- capsuleEnhance DoC ---------------------------------------------------
+% --- capsuleEnhance DoC — sweep wideWidth x alpha -------------------------
+% Fixed: width=10, lengths=[12 16 20 24], orientations=12.
+% Sweep: wideWidth in [16 20 24] (1.6x, 2.0x, 2.4x inner width)
+%        alpha     in [0.4 0.5 0.6 0.7]  (surround suppression weight)
+% -> 12 combos total.
 t.name = 'capsule(DoC)';  t.tag = 'capD-WS';
 t.fn   = @(I, p) capsuleEnhance(I, p);
-t.cfgs = {
-    struct('lengths',[8 12 16 20],       'width',6,'wideWidth',14,'alpha',0.55,'orientations',8,'mode','doc','normalize',true),
-    struct('lengths',[12 16 20 28],      'width',8,'wideWidth',18,'alpha',0.55,'orientations',8,'mode','doc','normalize',true),
-    struct('lengths',[12 16 20 28 36 40],'width',8,'wideWidth',18,'alpha',0.55,'orientations',8,'mode','doc','normalize',true)
-};
-t.cfgDescs = {
-    'lens=[8..20] w=6 wW=14 or=8',
-    'lens=[12..28] w=8 wW=18 or=8',
-    'lens=[12..40] w=8 wW=18 or=8'
-};
+wideWidths = [16 20 24];
+alphas     = [0.4 0.5 0.6 0.7];
+t.cfgs     = {};
+t.cfgDescs = {};
+for ww = wideWidths
+    for al = alphas
+        t.cfgs{end+1} = struct('lengths',[12 16 20 24],'width',10, ...
+            'wideWidth',ww,'alpha',al,'orientations',12,'mode','doc','normalize',true);
+        t.cfgDescs{end+1} = sprintf('wW=%d a=%.1f', ww, al);
+    end
+end
 t.maxExpand = 5;
 tasks{end+1} = t;
 
 % --- rodGranulometryEnhance -----------------------------------------------
+% lengths = full line lengths; span measured range 15-50 px.
+% orientations=12 (15 deg step).
 t.name = 'rodGranulometry';  t.tag = 'rod-WS';
 t.fn   = @(I, p) rodGranulometryEnhance(I, p);
 t.cfgs = {
-    struct('lengths',[4 8 12],          'orientations',8,'normalize',true),
-    struct('lengths',[8 12 16 20],      'orientations',8,'normalize',true),
-    struct('lengths',[8 12 16 20 28 36],'orientations',8,'normalize',true)
+    struct('lengths',[16 20 28],        'orientations',12,'normalize',true),
+    struct('lengths',[20 28 36 48],     'orientations',12,'normalize',true),
+    struct('lengths',[16 20 28 36 48],  'orientations',12,'normalize',true)
 };
 t.cfgDescs = {
-    'lens=[4 8 12] or=8',
-    'lens=[8 12 16 20] or=8',
-    'lens=[8 12 16 20 28 36] or=8'
+    'lens=[16 20 28] or=12',
+    'lens=[20 28 36 48] or=12',
+    'lens=[16 20 28 36 48] or=12'
 };
 t.maxExpand = 8;
 tasks{end+1} = t;
