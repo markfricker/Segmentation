@@ -235,7 +235,7 @@ for ti = 1:nTasks
     figTitle = sprintf('%s — best WS per config  |  best: %s, F1=%.3f  |  GT: %s', ...
                        tk.name, tk.cfgDescs{iBest}, bestF1overall, gtLabel);
 
-    if isfield(tk, 'gridRows')
+    if strcmp(tk.tag, 'capD-WS')
         % DoC sweep: block layout (rows=wideWidth, cols=Raw+alphas+GT)
         docGridFigure(figNum, Ireal, cpRGB, bestLabelsPerCfg, bestF1PerCfg, ...
                       bestDescPerCfg, tk, gtLabel, nCP);
@@ -499,6 +499,7 @@ tasks{end+1} = t;
 % --- rodGranulometryEnhance -----------------------------------------------
 % lengths = full line lengths; span measured range 15-50 px.
 % orientations=12 (15 deg step).
+t = struct();   % reset — prevents DoC-specific fields (gridRows/gridCols) carrying over
 t.name = 'rodGranulometry';  t.tag = 'rod-WS';
 t.fn   = @(I, p) rodGranulometryEnhance(I, p);
 t.cfgs = {
