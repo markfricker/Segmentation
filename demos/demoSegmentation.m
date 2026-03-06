@@ -35,7 +35,7 @@ clear; clc; close all;
 blobFunctionPath = 'C:\Users\dops0035\Documents\Research\Matlab Projects\BlobFilters_sandbox\src';
 
 % Set true to export all figures as PDF to outDir (for LaTeX manual).
-doExport = false;
+doExport = true;
 outDir   = fullfile(blobFunctionPath, '..', 'docs', 'figures');
 
 % =========================================================================
