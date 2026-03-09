@@ -40,7 +40,7 @@
 %
 % REQUIREMENTS
 %   localThresholdFast.m, watershedSegment.m, refineSegment.m on path.
-%   BlobFilters enhancers and cellposeEnhance on path (set blobFunctionPath).
+%   BlobFilters enhancers on path (set blobFunctionPath).
 %   Cellpose add-on + Python cellpose for ground-truth generation.
 %   Image Processing Toolbox (including activecontour for Chan-Vese).
 %   mitImagecrop.mat in BlobFilters_sandbox/demos/.
@@ -128,10 +128,10 @@ elseif exist('cellpose', 'file') ~= 0
     pCP.flowThreshold = cpGTflowThreshold;
     pCP.nIter         = cpGTnIter;
     pCP.minSize       = cpMinSize;
-    fprintf('  Running cellposeEnhance...  ');
+    fprintf('  Running cellposeSegment...  ');
     try
         tic;
-        [~, cpL] = cellposeEnhance(Ireal, pCP);
+        [cpL, ~] = cellposeSegment(Ireal, pCP);
         fprintf('%.1fs  (n=%d objects)\n', toc, max(cpL(:)));
     catch ME
         error('sweepSegmentation:cellposeFailed', ...

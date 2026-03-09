@@ -45,7 +45,7 @@ function [BW, L] = watershedSegment(I, varargin)
 % OUTPUTS
 %   BW : binary segmentation mask, single precision [0,1], same size as I.
 %        Foreground pixels = 1, background = 0.  Consistent with the
-%        output convention of cellposeEnhance and other BlobFilters tools.
+%        output convention of cellposeSegment and other segmentation tools.
 %   L  : label image, uint16, same size as I.
 %        Each detected object carries a unique positive integer label.
 %        Background = 0.  Use label2rgb(L) for display.
@@ -109,8 +109,8 @@ function [BW, L] = watershedSegment(I, varargin)
 %     region during the final masking step so that BW has no gaps.
 %   - For very thin tubular mitochondria, the 'marker' method with a small
 %     'hMinima' (e.g. 0.01) and 'seedErosion' = 1 is recommended.
-%   - For post-Cellpose use, prefer cellposeEnhance directly; this function
-%     is intended for classical (non-deep-learning) pipelines.
+%   - For deep-learning segmentation, use cellposeSegment directly; this
+%     function is intended for classical (non-deep-learning) pipelines.
 %   - All three methods accept any [0,1]-normalised enhancement map as
 %     input, including the outputs of fiberEnhance, rodGranulometryEnhance,
 %     structureTensorEnhance, etc.
@@ -149,8 +149,8 @@ function [BW, L] = watershedSegment(I, varargin)
 %   [BW, L] = watershedSegment(R, 'method', 'gradient', ...
 %                                  'smoothSigma', 1.5, 'hMinima', 0.03);
 %
-% See also: localThresholdFast, bwdist, watershed, imextendedmax,
-%           imimposemin, imhmin, label2rgb
+% See also: cellposeSegment, refineSegment, localThresholdFast, bwdist,
+%           watershed, imextendedmax, imimposemin, imhmin, label2rgb
 
 %% ---------------- input parsing ----------------
 p = inputParser;

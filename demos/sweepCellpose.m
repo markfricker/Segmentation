@@ -53,7 +53,7 @@
 %               2000 recommended for elongated structures (literature).
 %
 % REQUIREMENTS
-%   cellposeEnhance.m on path (BlobFilters toolbox).
+%   cellposeSegment.m on path (Segmentation_sandbox/src).
 %   Medical Imaging Toolbox Interface for Cellpose Library Add-On.
 %   Python environment with cellpose installed.
 
@@ -103,9 +103,9 @@ addpath(fullfile(demoDir, '..', 'src'));
 if ~isempty(blobFunctionPath) && exist(blobFunctionPath, 'dir')
     addpath(blobFunctionPath);
 end
-if ~exist('cellposeEnhance', 'file')
-    error('sweepCellpose:noCellposeEnhance', ...
-          'cellposeEnhance not found.  Check blobFunctionPath.');
+if ~exist('cellposeSegment', 'file')
+    error('sweepCellpose:noCellposeSegment', ...
+          'cellposeSegment not found.  Check that Segmentation_sandbox/src is on the path.');
 end
 if exist('cellpose', 'file') == 0
     error('sweepCellpose:noAddon', ...
@@ -195,7 +195,7 @@ if doSweep
                     fprintf('  cp=%+d  ft=%.2f  ... ', cpVals(ci), ftVals(fi));
                     tic;
                     try
-                        [~, Lk] = cellposeEnhance(Ireal, pCP);
+                        [Lk, ~] = cellposeSegment(Ireal, pCP);
                         n_k = double(max(Lk(:)));
                         c_k = 100 * nnz(Lk > 0) / numel(Lk);
                         nObjAll(mi,ni,ci,fi) = n_k;

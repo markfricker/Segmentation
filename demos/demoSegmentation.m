@@ -22,7 +22,8 @@
 % REQUIREMENTS
 %   localThresholdFast.m and watershedSegment.m (Segmentation_sandbox/src)
 %   BlobFilters: logEnhance, fiberEnhance, capsuleEnhance,
-%                rodGranulometryEnhance, cellposeEnhance, orientedGaussSmooth
+%                rodGranulometryEnhance, orientedGaussSmooth
+%   Segmentation_sandbox: cellposeSegment (src/)
 %   Image Processing Toolbox (bwdist, watershed, imextendedmax, etc.)
 %   MATLAB Medical Imaging Toolbox Interface for Cellpose Library
 
@@ -93,10 +94,10 @@ if exist('cellpose','file') == 0
           'Cellpose add-on not installed. Cannot generate ground truth.');
 end
 
-fprintf('  cellposeEnhance (%s, cp=%d, ft=%.1f, minSize=%d)... ', ...
+fprintf('  cellposeSegment (%s, cp=%d, ft=%.1f, minSize=%d)... ', ...
         cpGTmodel, cpGTcellProb, cpGTflowThreshold, cpMinSize);
 tic;
-[~, cpL] = cellposeEnhance(Ireal, pCP);
+[cpL, ~] = cellposeSegment(Ireal, pCP);
 fprintf('%.1fs  (%d objects)\n', toc, max(cpL(:)));
 
 cpBW  = logical(cpL > 0);

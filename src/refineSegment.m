@@ -11,7 +11,7 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %        as L.  Used as the intensity guide for boundary expansion.
 %   L  : Instance label image, uint16, same size as I.
 %        Background = 0; each object carries a unique positive integer
-%        label.  Typically produced by watershedSegment or cellposeEnhance.
+%        label.  Typically produced by watershedSegment or cellposeSegment.
 %
 % NAME-VALUE PAIRS
 %   'method'       : boundary-refinement strategy (default 'chanvese')
@@ -132,8 +132,8 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %                                'maxExpand',    8, ...
 %                                'fgThreshold',  0.10);
 %
-% See also: watershedSegment, localThresholdFast, activecontour, bwdist,
-%           imdilate, label2rgb
+% See also: watershedSegment, cellposeSegment, localThresholdFast,
+%           activecontour, bwdist, imdilate, label2rgb
 
 %% ----------- input parsing -----------
 p = inputParser;
