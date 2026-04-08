@@ -126,6 +126,7 @@ parse(p,I,varargin{:});
 
 method = lower(string(p.Results.method));
 win    = p.Results.windowsize;
+win    = win + (mod(win,2)==0);   % ensure odd (even window → padding mismatch)
 k      = p.Results.k;
 R      = p.Results.r;
 p_par  = p.Results.p;
