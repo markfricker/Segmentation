@@ -12,13 +12,13 @@ function [L, BW] = cellposeSegment(I, params)
 %            .model         = 'cyto3' % Cellpose model name or absolute path
 %                                     % to a custom model file
 %            .diameter      = 10      % expected object diameter in pixels
-%            .cellProb      = 0       % cell probability threshold in [−6,6];
+%            .cellProb      = -1      % cell probability threshold in [−6,6];
 %                                     % lower values detect fainter / smaller
 %                                     % objects.  0 found optimal for
 %                                     % mitochondria fluorescence (sweepCellpose
 %                                     % 2026-03-03); try −1 for slightly higher
 %                                     % recall at cost of more false positives.
-%            .flowThreshold = 0.4     % flow-error threshold in [0.1,3];
+%            .flowThreshold = 0.8     % flow-error threshold in [0.1,3];
 %                                     % higher values detect more objects
 %                                     % at the cost of boundary precision
 %            .nIter         = 0       % Cellpose gradient-descent iterations.
@@ -204,10 +204,10 @@ function [L, BW] = cellposeSegment(I, params)
 % --- defaults ---------------------------------------------------------------
 if nargin < 2, params = struct(); end
 if ~isfield(params, 'model'),         params.model         = 'cyto3'; end
-if ~isfield(params, 'diameter'),      params.diameter      = 10;      end
-if ~isfield(params, 'cellProb'),      params.cellProb      = 0;        end
+if ~isfield(params, 'diameter'),      params.diameter      = 6;      end
+if ~isfield(params, 'cellProb'),      params.cellProb      = -1;        end
 if ~isfield(params, 'flowThreshold'), params.flowThreshold = 0.8;     end
-if ~isfield(params, 'nIter'),         params.nIter         = 0;       end
+if ~isfield(params, 'nIter'),         params.nIter         = 200;       end
 if ~isfield(params, 'minSize'),       params.minSize       = 0;       end
 if ~isfield(params, 'normalize'),     params.normalize     = true;    end
 
