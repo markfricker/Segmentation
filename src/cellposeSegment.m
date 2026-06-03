@@ -202,6 +202,13 @@ function [L, BW] = cellposeSegment(I, params)
 % See also: watershedSegment, refineSegment, localThresholdFast
 
 % --- defaults ---------------------------------------------------------------
+% PyTorch deadlocks against MATLAB threads in InProcess mode.
+% OutOfProcess runs Python in a separate process, avoiding the conflict.
+% Requires the Windows Firewall to allow python.exe inbound connections.
+if strcmp(pyenv().Status, 'NotLoaded')
+    pyenv('ExecutionMode', 'OutOfProcess');
+end
+
 if nargin < 2, params = struct(); end
 if ~isfield(params, 'model'),         params.model         = 'cyto3'; end
 if ~isfield(params, 'diameter'),      params.diameter      = 6;      end
@@ -217,6 +224,7 @@ if size(I, 3) > 1
           'cellposeSegment: expected 2-D grayscale image, got %d-channel input.', ...
           size(I,3));
 end
+
 try
     pyrun("import cellpose");
 catch pyErr
@@ -227,93 +235,128 @@ catch pyErr
            'Python error: %s'], pyErr.message);
 end
 
+% Guard against Cellpose 4, whose CellposeModel uses a SAM ViT backbone
+% that is architecturally incompatible with CP3 models (cyto3, bact_fluor_cp3,
+% etc.).  CP4 also silently redirects the name 'cyto3' to 'cpsam', which is
+% unsuitable for small organelles.  Downgrade to keep CP3 behaviour.
+cpVer = char(pyrun("import importlib.metadata; out = importlib.metadata.version('cellpose')", "out"));
+cpMaj = sscanf(cpVer, '%d', 1);
+if ~isempty(cpMaj) && cpMaj >= 4
+    error('cellposeSegment:cp4Incompatible', [ ...
+        'Cellpose %s is installed, but CP4 is not compatible with CP3\n' ...
+        'models (cyto3, bact_fluor_cp3, etc.) and its default model\n' ...
+        '(cpsam) returns blank masks for small organelles.\n\n' ...
+        'Fix: downgrade to the last CP3 release:\n' ...
+        '  pip install "cellpose<4"\n\n' ...
+        'Then restart MATLAB to reload the Python environment.'], cpVer);
+end
+
 I = im2single(I);
 
-% --- run Cellpose -----------------------------------------------------------
-% Always use the Python CellposeModel.eval() path.  This works with all
-% Cellpose versions (v3, v4+) without depending on the MathWorks add-on.
-% nIter = 0  → Cellpose default (~200 iterations)
-% nIter > 0  → explicit niter (recommended: 2000 for elongated organelles)
-[L, BW] = cpRunWithNIter(I, params.model, params.diameter, ...
-                         params.cellProb, params.flowThreshold, ...
-                         params.nIter);
-
-% --- post-filter: discard objects smaller than minSize ----------------------
-if params.minSize > 0 && max(L(:)) > 0
-    st   = regionprops(L, 'Area', 'PixelIdxList');
-    Lnew = zeros(size(L), 'uint16');
-    newk = 0;
-    for k = 1:numel(st)
-        if st(k).Area >= params.minSize
-            newk = newk + 1;
-            Lnew(st(k).PixelIdxList) = uint16(newk);
-        end
-    end
-    L  = Lnew;
-    BW = single(L > 0);
-end
-end
-
-% ---- local helper: Python Cellpose with niter support ----------------------
-function [L, BW] = cpRunWithNIter(I, modelName, diameter, cellProb, flowThreshold, nIter)
-% cpRunWithNIter  Cellpose segmentation via direct Python call.
-%   Supports the niter parameter, which MathWorks segmentCells2D() does not
-%   expose.  Named models ('cyto3', 'bact_fluor_cp3', etc.) are resolved by
-%   the Python Cellpose package directly (downloading weights on first call).
-%   Custom paths are passed via pretrained_model.  Requires MATLAB R2022a+.
+% --- run Cellpose via persistent server --------------------------------------
+% pyrun and system() both hang when PyTorch/CUDA initialises inside a process
+% spawned from MATLAB.  The server runs as an independent process started
+% directly from PowerShell (where Python works fine), loads the model once,
+% and handles all requests via temp files.  MATLAB polls for results.
 %
-%   I is already im2single [0,1] on entry.
-
-% pretrained_model= accepts both named models ('cyto3', 'bact_fluor_cp3', ...)
-% and absolute file paths.  Works with Cellpose v3 and v4+.
-% (v3 model_type= and v4 model= are both version-specific and avoided here.)
-ctorStr = "CellposeModel(pretrained_model='" + modelName + "')";
-
-% Build optional niter clause: omit entirely when 0 so Cellpose uses its default
-if nIter > 0
-    niterClause = "niter=int(nit), ";
-else
-    niterClause = "";
+% START THE SERVER ONCE before using cellposeSegment:
+%   In PowerShell:
+%     python "...Segmentation_sandbox\src\cellposeServer.py" "C:\cellpose_work"
+%   Or call cellposeServerStart() from MATLAB (uses system start /B).
+[L, BW] = cpRunViaServer(I, params);
 end
 
-masks = pyrun([ ...
-    "from cellpose.models import CellposeModel; " ...
-    "import numpy as np; " ...
-    "m = " + ctorStr + "; " ...
-    "msk, _, _ = m.eval([np.array(img).astype(np.float32)], " ...
-    "    diameter=float(diam), " + niterClause + ...
-    "    cellprob_threshold=float(cp), " ...
-    "    flow_threshold=float(ft), do_3D=False); " ...
-    "out = msk[0].astype(np.uint16)"], ...
-    "out", img=double(I), diam=diameter, nit=int32(nIter), ...
-    cp=cellProb, ft=flowThreshold);
+% ---- local helper: communicate with cellposeServer.py ----------------------
+function [L, BW] = cpRunViaServer(I, params)
 
-% Convert numpy uint16 [H x W] → MATLAB uint16 matrix.
-% double() intermediate handles numpy→MATLAB conversion (R2022a+).
-L = uint16(double(masks));
-if ~isequal(size(L), size(I))
-    L = L';   % transpose if MATLAB/Python axis order is swapped
+srcDir  = fileparts(mfilename('fullpath'));
+workDir = fullfile(tempdir, 'cellpose_work');
+if ~exist(workDir, 'dir'), mkdir(workDir); end
+
+% ---- ensure server is running -----------------------------------------------
+pidFile = fullfile(workDir, 'server.pid');
+if ~cpServerAlive(pidFile)
+    fprintf('Starting cellpose server (first call ~15 s)...\n');
+    pyExeStr = pyenv().Executable;
+    if isempty(pyExeStr), pyExeStr = 'python'; end
+    serverScript = fullfile(srcDir, 'cellposeServer.py');
+    % Windows Job Objects propagate to all child processes regardless of
+    % console flags (/B, /MIN, etc).  The only reliable escape is the Task
+    % Scheduler service, which runs processes in its own session outside any
+    % application job object.
+    taskName = 'MATLABCellposeServer';
+    tr = sprintf('"%s" "%s" "%s"', pyExeStr, serverScript, workDir);
+    system(sprintf('schtasks /Delete /TN "%s" /F > NUL 2>&1', taskName));
+    createCmd = sprintf('schtasks /Create /F /TN "%s" /TR "%s" /SC ONCE /SD 01/01/2000 /ST 00:00', ...
+                        taskName, strrep(tr, '"', '\"'));
+    system(createCmd);
+    system(sprintf('schtasks /Run /TN "%s"', taskName));
+    % Wait for server to write its PID file (up to 120 s for model load)
+    t0 = tic;
+    while ~cpServerAlive(pidFile) && toc(t0) < 120
+        pause(0.5);
+    end
+    if ~cpServerAlive(pidFile)
+        error('cellposeSegment:serverTimeout', ...
+              ['Cellpose server did not start within 120 s.\n' ...
+               'Start it manually from PowerShell:\n' ...
+               '  python "%s" "%s"'], serverScript, workDir);
+    end
+    fprintf('Cellpose server ready.\n');
 end
+
+% ---- write request ----------------------------------------------------------
+reqId  = sprintf('%s_%d', datestr(now,'yyyymmddHHMMSSFFF'), randi(99999));
+reqFile = fullfile(workDir, [reqId '.req.mat']);
+resFile = fullfile(workDir, [reqId '.res.mat']);
+errFile = fullfile(workDir, [reqId '.err']);
+
+model         = params.model;        %#ok<NASGU>
+diameter      = params.diameter;     %#ok<NASGU>
+cellprob      = params.cellProb;     %#ok<NASGU>
+flowthreshold = params.flowThreshold;%#ok<NASGU>
+niter         = params.nIter;        %#ok<NASGU>
+minsize       = params.minSize;      %#ok<NASGU>
+timeout       = 300;                 %#ok<NASGU>
+save(reqFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
+     'niter', 'minsize', 'timeout', '-v6');
+
+% ---- poll for result --------------------------------------------------------
+fprintf('Cellpose running');
+pollTimeout = 300;
+t0 = tic;
+while ~exist(resFile, 'file') && ~exist(errFile, 'file')
+    if toc(t0) > pollTimeout
+        try, delete(reqFile); catch, end
+        error('cellposeSegment:timeout', 'Cellpose timed out after %d s.', pollTimeout);
+    end
+    pause(0.25);
+    fprintf('.');
+end
+fprintf('\n');
+
+if exist(errFile, 'file')
+    msg = fileread(errFile);
+    delete(errFile);
+    error('cellposeSegment:failed', 'Cellpose error:\n%s', msg);
+end
+
+result = load(resFile);
+delete(resFile);
+L  = uint16(result.L);
 BW = single(L > 0);
 end
 
-
-% ---- local helper -----------------------------------------------------------
-function p = cpResolveModelPath(modelName)
-% cpResolveModelPath  Resolve a Cellpose model name to its cached file path.
-%
-%   Uses the Python cellpose package to instantiate the requested model
-%   (downloading weights if they are not already cached) and returns the
-%   absolute path to the weight file.  This path can be passed directly to
-%   the MATLAB cellpose() constructor as a custom model.
-%
-%   Handles the Cellpose 4+ behaviour where 'cyto3' is silently redirected
-%   to 'cpsam' — the returned path reflects whichever file was actually
-%   cached, not the name requested.
-p = char(pyrun( ...
-    "from cellpose.models import CellposeModel; " + ...
-    "m = CellposeModel(pretrained_model='" + modelName + "'); " +...
-    "out = m.pretrained_model[0] if isinstance(m.pretrained_model, list) " + ...
-    "else m.pretrained_model", ...
-    "out"));
+% ---- helper: is the server process alive? -----------------------------------
+function alive = cpServerAlive(pidFile)
+alive = false;
+if ~exist(pidFile, 'file'), return; end
+try
+    pid = str2double(strtrim(fileread(pidFile)));
+    if isnan(pid) || pid <= 0, return; end
+    % Check if process with this PID exists using tasklist
+    [~, out] = system(sprintf('tasklist /FI "PID eq %d" /NH 2>NUL', pid));
+    alive = contains(out, num2str(pid));
+catch
+end
 end
