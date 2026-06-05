@@ -318,11 +318,13 @@ flowthreshold = params.flowThreshold;%#ok<NASGU>
 niter         = params.nIter;        %#ok<NASGU>
 minsize       = params.minSize;      %#ok<NASGU>
 timeout       = 300;                 %#ok<NASGU>
-save(reqFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
+% Write to a .tmp file then rename so the server never sees a partial write.
+tmpFile = [reqFile '.tmp'];
+save(tmpFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
      'niter', 'minsize', 'timeout', '-v6');
+movefile(tmpFile, reqFile);
 
 % ---- poll for result --------------------------------------------------------
-fprintf('Cellpose running');
 pollTimeout = 300;
 t0 = tic;
 while ~exist(resFile, 'file') && ~exist(errFile, 'file')
@@ -331,9 +333,7 @@ while ~exist(resFile, 'file') && ~exist(errFile, 'file')
         error('cellposeSegment:timeout', 'Cellpose timed out after %d s.', pollTimeout);
     end
     pause(0.25);
-    fprintf('.');
 end
-fprintf('\n');
 
 if exist(errFile, 'file')
     msg = fileread(errFile);

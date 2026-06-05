@@ -146,7 +146,16 @@ while True:
         err_file = watch_dir / f'{base}.err'
 
         try:
-            mat     = sio.loadmat(str(req_file))
+            # Retry loadmat briefly — guards against seeing the file mid-write
+            # (primary guard is the .tmp→.req.mat rename in the MATLAB client).
+            for _attempt in range(5):
+                try:
+                    mat = sio.loadmat(str(req_file))
+                    break
+                except Exception:
+                    if _attempt == 4:
+                        raise
+                    time.sleep(0.1)
 
             def s(key, default):
                 """Extract a scalar from a scipy.io.loadmat value."""
@@ -166,7 +175,7 @@ while True:
 
             m = get_model(model)
 
-            import threading
+            import threading, io, contextlib
             _res = [None, None]
             def _run():
                 try:
@@ -174,7 +183,10 @@ while True:
                                   flow_threshold=ft, do_3D=False)
                     if niter > 0:
                         kwargs['niter'] = niter
-                    masks, _, _ = m.eval([I], **kwargs)
+                    # Suppress Cellpose's own stdout/stderr chatter
+                    with contextlib.redirect_stdout(io.StringIO()), \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        masks, _, _ = m.eval([I], **kwargs)
                     _res[0] = masks[0].astype(np.uint16)
                 except Exception as e:
                     _res[1] = traceback.format_exc()
