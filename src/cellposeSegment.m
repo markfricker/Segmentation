@@ -276,6 +276,10 @@ if ~exist(workDir, 'dir'), mkdir(workDir); end
 % ---- ensure server is running -----------------------------------------------
 pidFile = fullfile(workDir, 'server.pid');
 if ~cpServerAlive(pidFile)
+    % Remove a stale PID file left behind by a server that has since died,
+    % so cpServerAlive sees the fresh PID written by the new server rather
+    % than a dead one.
+    if exist(pidFile, 'file'), delete(pidFile); end
     fprintf('Starting cellpose server (first call ~15 s)...\n');
     pyExeStr = pyenv().Executable;
     if isempty(pyExeStr), pyExeStr = 'python'; end
@@ -290,6 +294,16 @@ if ~cpServerAlive(pidFile)
     createCmd = sprintf('schtasks /Create /F /TN "%s" /TR "%s" /SC ONCE /SD 01/01/2000 /ST 00:00', ...
                         taskName, strrep(tr, '"', '\"'));
     system(createCmd);
+    % schtasks /Create defaults DisallowStartIfOnBatteries and
+    % StopIfGoingOnBatteries to TRUE.  On a laptop running on battery the task
+    % is then silently parked in "Queued" and never launches the server, so
+    % MATLAB times out below waiting for server.pid.  Flip both conditions off
+    % (and keep the single-instance policy) before running the task.
+    powerCmd = sprintf(['powershell -NoProfile -Command ' ...
+        '"Set-ScheduledTask -TaskName ''%s'' -Settings ' ...
+        '(New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ' ...
+        '-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew)"'], taskName);
+    system(powerCmd);
     system(sprintf('schtasks /Run /TN "%s"', taskName));
     % Wait for server to write its PID file (up to 120 s for model load)
     t0 = tic;
