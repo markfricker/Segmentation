@@ -144,6 +144,7 @@ addParameter(p, 'maxExpand',    5);
 addParameter(p, 'nIter',        100);
 addParameter(p, 'smoothFactor', 1.0);
 addParameter(p, 'fgThreshold',  0.1);
+addParameter(p, 'level',        0.5);  % 'halfmax': fraction between local bg and peak
 addParameter(p, 'minArea',      10);
 addParameter(p, 'pad',          []);   % derived below if empty
 parse(p, I, L, varargin{:});
@@ -153,6 +154,7 @@ maxExpand  = p.Results.maxExpand;
 nIter      = p.Results.nIter;
 smoothFact = p.Results.smoothFactor;
 fgThresh   = p.Results.fgThreshold;
+level      = p.Results.level;
 minArea    = p.Results.minArea;
 padSz      = p.Results.pad;
 
@@ -292,7 +294,69 @@ if method == "dilate"
     return
 end
 
-error('refineSegment:unknownMethod', ...
-      'Unknown method "%s". Choose ''chanvese'' or ''dilate''.', method);
+%% ============================================================
+%% Local half-max threshold within a non-merging Voronoi territory
+%% ============================================================
+if method == "halfmax"
+    % Each object gets an exclusive expanded territory (Voronoi, capped at
+    % maxExpand) and is then thresholded at LEVEL of the way from its local
+    % background to its peak — an intensity-adaptive boundary per object,
+    % rather than one fixed threshold for all.  Adjacent objects cannot merge
+    % (territories are disjoint).
+    seedMask = L > 0;
+    [D, nearest_idx] = bwdist(seedMask);
+    L_terr = uint16(L(nearest_idx));
+    L_terr(D > maxExpand) = 0;                  % exclusive territory per label
 
+    nLabels = double(max(L(:)));
+    L_accum = zeros(imgH, imgW, 'uint16');
+
+    for k = 1:nLabels
+        objMask  = (L == k);
+        terrMask = (L_terr == k);
+        if ~any(objMask(:)) || ~any(terrMask(:)), continue; end
+
+        peak = pctl(I(objMask), 95);
+        ring = terrMask & ~objMask;             % expansion zone ~ local background
+        if any(ring(:))
+            bg = pctl(I(ring), 50);
+        else
+            bg = pctl(I(terrMask), 10);
+        end
+        thr = bg + level * (peak - bg);
+
+        accept = (terrMask & I >= thr);
+        seed   = objMask & accept;
+        if ~any(seed(:)), seed = objMask; end
+        refined = imreconstruct(seed, accept | objMask);   % keep core, grow to half-max
+
+        new = refined & (L_accum == 0);         % no-overwrite (territories disjoint)
+        L_accum(new) = uint16(k);
+    end
+
+    for k = 1:nLabels
+        if nnz(L_accum == k) < minArea
+            L_accum(L_accum == k) = 0;
+        end
+    end
+    uL  = setdiff(unique(L_accum(:)), uint16(0));
+    L_r = zeros(imgH, imgW, 'uint16');
+    for ki = 1:numel(uL)
+        L_r(L_accum == uL(ki)) = ki;
+    end
+    BW_r = single(L_r > 0);
+    return
+end
+
+error('refineSegment:unknownMethod', ...
+      'Unknown method "%s". Choose ''chanvese'', ''dilate'' or ''halfmax''.', method);
+
+end
+
+% -------------------------------------------------------------------------
+function v = pctl(x, q)
+%PCTL  Percentile without the Statistics Toolbox (q in 0..100).
+    if isempty(x), v = 0; return; end
+    xs = sort(x(:));
+    v  = xs(min(numel(xs), max(1, round(q/100 * numel(xs)))));
 end
