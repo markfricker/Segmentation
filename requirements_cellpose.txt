@@ -1,36 +1,34 @@
 # Cellpose environment — Python 3.11 (system install)
-# Installed at: C:\Program Files\Python311
-# Install command: pip install -r requirements_cellpose.txt
+# Installed at: C:\Program Files\Python311\
 #
-# NOTE: torch and torchvision were installed as nightly CUDA 12.8 builds.
-# For the stable equivalent, use:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-# Then install the remaining packages below.
+# INSTALL INSTRUCTIONS (run from an elevated PowerShell as Python 3.11 pip):
+#
+#   Step 1 — PyTorch with CUDA 12.8 (must be done first, before cellpose):
+#     py -3.11 -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+#   Step 2 — everything else:
+#     py -3.11 -m pip install -r requirements_cellpose.txt
+#
+# NOTES:
+#   - numpy is intentionally unpinned: cellpose 3.x requires numpy<2.1,
+#     so pip will choose a compatible version automatically.
+#   - torch/torchvision are NOT listed here because they require a custom
+#     index URL (--index-url); install them in Step 1 above.
+#   - Tested on Python 3.11 / CUDA 12.8 / RTX 3050 (driver 596.08).
 
 cellpose==3.1.1.3
-colorama==0.4.6
-fastremap==1.19.0
-filelock==3.29.0
-fill_voids==2.1.2
-fsspec==2026.4.0
-imagecodecs==2026.3.6
-imageio==2.37.3
-Jinja2==3.1.6
-lazy-loader==0.5
-llvmlite==0.47.0
-MarkupSafe==3.0.2
-mpmath==1.3.0
-natsort==8.4.0
-networkx==3.6.1
 numba==0.65.1
-numpy==2.4.4
-opencv-python-headless==4.13.0.92
-packaging==26.2
-pillow==12.2.0
-roifile==2026.2.10
+llvmlite==0.47.0
 scikit-image==0.26.0
 scipy==1.17.1
-sympy==1.14.0
+imageio==2.37.3
 tifffile==2026.3.3
+pillow==12.2.0
+opencv-python-headless==4.13.0.92
 tqdm==4.67.3
-typing_extensions==4.15.0
+natsort==8.4.0
+roifile==2026.2.10
+fastremap==1.19.0
+fill_voids==2.1.2
+imagecodecs==2026.3.6
+colorama==0.4.6
