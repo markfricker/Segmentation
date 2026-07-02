@@ -36,6 +36,13 @@ function [L, BW] = cellposeSegment(I, params)
 %                                     % 0 = keep all objects (no filtering).
 %                                     % ~50 recommended when comparing models
 %                                     % that differ in false-positive rate.
+%            .timeout       = 900     % seconds to wait for the cellpose
+%                                     % server before erroring out. The
+%                                     % server always runs on CPU (see
+%                                     % cellposeServer.py), so full-frame
+%                                     % images combined with nIter = 2000
+%                                     % can take several minutes; raise this
+%                                     % further for large frames.
 %
 % OUTPUTS
 %   L       - label image, uint16, same size as I.
@@ -217,6 +224,7 @@ if ~isfield(params, 'flowThreshold'), params.flowThreshold = 0.8;     end
 if ~isfield(params, 'nIter'),         params.nIter         = 200;       end
 if ~isfield(params, 'minSize'),       params.minSize       = 0;       end
 if ~isfield(params, 'normalize'),     params.normalize     = true;    end
+if ~isfield(params, 'timeout'),       params.timeout       = 900;     end
 
 % --- input validation -------------------------------------------------------
 if size(I, 3) > 1
@@ -274,12 +282,15 @@ workDir = fullfile(tempdir, 'cellpose_work');
 if ~exist(workDir, 'dir'), mkdir(workDir); end
 
 % ---- ensure server is running -----------------------------------------------
-pidFile = fullfile(workDir, 'server.pid');
+pidFile   = fullfile(workDir, 'server.pid');
+readyFile = fullfile(workDir, 'server.ready');
 if ~cpServerAlive(pidFile)
     % Remove a stale PID file left behind by a server that has since died,
     % so cpServerAlive sees the fresh PID written by the new server rather
-    % than a dead one.
+    % than a dead one. Also clear any stale ready marker — the process that
+    % wrote it is gone, so it must not be mistaken for the new one's status.
     if exist(pidFile, 'file'), delete(pidFile); end
+    if exist(readyFile, 'file'), delete(readyFile); end
     fprintf('Starting cellpose server (first call ~15 s)...\n');
     pyExeStr = pyenv().Executable;
     if isempty(pyExeStr), pyExeStr = 'python'; end
@@ -305,18 +316,29 @@ if ~cpServerAlive(pidFile)
         '-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew)"'], taskName);
     system(powerCmd);
     system(sprintf('schtasks /Run /TN "%s"', taskName));
-    % Wait for server to write its PID file (up to 120 s for model load)
+    % Wait for the server to actually finish loading and enter its request
+    % loop (server.ready), not just for the process to start (server.pid,
+    % written well before the model finishes loading) — up to 120 s.
     t0 = tic;
-    while ~cpServerAlive(pidFile) && toc(t0) < 120
+    while ~cpServerReady(pidFile, readyFile) && toc(t0) < 120
         pause(0.5);
     end
-    if ~cpServerAlive(pidFile)
+    if ~cpServerReady(pidFile, readyFile)
         error('cellposeSegment:serverTimeout', ...
-              ['Cellpose server did not start within 120 s.\n' ...
+              ['Cellpose server did not become ready within 120 s.\n' ...
                'Start it manually from PowerShell:\n' ...
                '  python "%s" "%s"'], serverScript, workDir);
     end
     fprintf('Cellpose server ready.\n');
+else
+    % Server process is already alive but may have JUST been started by
+    % another concurrent call and still be mid-model-load — wait briefly
+    % for it to finish rather than writing a request into an unattended
+    % queue with no visible progress.
+    t0 = tic;
+    while ~cpServerReady(pidFile, readyFile) && toc(t0) < 120
+        pause(0.25);
+    end
 end
 
 % ---- write request ----------------------------------------------------------
@@ -331,7 +353,7 @@ cellprob      = params.cellProb;     %#ok<NASGU>
 flowthreshold = params.flowThreshold;%#ok<NASGU>
 niter         = params.nIter;        %#ok<NASGU>
 minsize       = params.minSize;      %#ok<NASGU>
-timeout       = 300;                 %#ok<NASGU>
+timeout       = params.timeout;      %#ok<NASGU>
 % Write to a .tmp file then rename so the server never sees a partial write.
 tmpFile = [reqFile '.tmp'];
 save(tmpFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
@@ -339,7 +361,9 @@ save(tmpFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
 movefile(tmpFile, reqFile);
 
 % ---- poll for result --------------------------------------------------------
-pollTimeout = 300;
+% Give the client an extra 30 s over the server-side eval timeout so the
+% server's own timeout error (written to errFile) has time to land first.
+pollTimeout = params.timeout + 30;
 t0 = tic;
 while ~exist(resFile, 'file') && ~exist(errFile, 'file')
     if toc(t0) > pollTimeout
@@ -373,4 +397,14 @@ try
     alive = contains(out, num2str(pid));
 catch
 end
+end
+
+% ---- helper: is the server actually able to serve requests? -----------------
+% Distinct from cpServerAlive — the PID file is written the moment the
+% process starts, well before the model finishes loading (up to ~15-120 s).
+% server.ready is written by cellposeServer.py only once it has entered its
+% request loop, so this is the correct readiness signal to wait on before
+% writing a request.
+function ready = cpServerReady(pidFile, readyFile)
+ready = cpServerAlive(pidFile) && exist(readyFile, 'file');
 end

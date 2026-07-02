@@ -48,8 +48,15 @@ if len(sys.argv) < 2:
 watch_dir = Path(sys.argv[1])
 watch_dir.mkdir(parents=True, exist_ok=True)
 
-# Write PID file so MATLAB can check if server is running
+# Write PID file so MATLAB can check if the server PROCESS is running.
+# server.ready (below) is the separate signal for whether it has actually
+# finished loading a model and is able to serve requests — the PID exists
+# as soon as the process starts, long before that.
 pid_file = watch_dir / 'server.pid'
+ready_file = watch_dir / 'server.ready'
+# Clear any stale ready marker from a previous instance before it's
+# possible for a client to mistake it for this (not-yet-ready) process.
+ready_file.unlink(missing_ok=True)
 pid_file.write_text(str(os.getpid()))
 print(f'[server] PID {os.getpid()}  watching {watch_dir}', flush=True)
 
@@ -127,6 +134,12 @@ except Exception as e:
     print(f'[server] WARNING: could not pre-load cyto3: {e}', flush=True)
     print('[server] ready (model will load on first request)', flush=True)
 
+# Signal readiness to serve requests — either path above leaves the server
+# able to process the request loop below (worst case, first request pays
+# the model-load cost lazily inside get_model). Written last, right before
+# entering the loop, so clients polling for this file never see it early.
+ready_file.write_text(str(os.getpid()))
+
 # ---- request loop -----------------------------------------------------------
 while True:
     # Exit signal
@@ -171,7 +184,7 @@ while True:
             ft      = s('flowthreshold',  0.8)
             niter   = int(s('niter',      0))
             minsize = int(s('minsize',    0))
-            timeout = s('timeout',      300.0)
+            timeout = s('timeout',      900.0)
 
             m = get_model(model)
 
@@ -231,3 +244,4 @@ while True:
     time.sleep(0.05)   # 50 ms poll interval
 
 pid_file.unlink(missing_ok=True)
+ready_file.unlink(missing_ok=True)
