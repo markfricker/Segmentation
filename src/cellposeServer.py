@@ -60,15 +60,21 @@ ready_file.unlink(missing_ok=True)
 pid_file.write_text(str(os.getpid()))
 print(f'[server] PID {os.getpid()}  watching {watch_dir}', flush=True)
 
-# ---- startup diagnostic log -------------------------------------------------
-# Written to file because Task Scheduler output is not visible.
-# Check cellpose_work/server_startup.log to see which import hangs.
+# ---- redirect stdout/stderr to log file -------------------------------------
+# When launched via pythonw.exe (no console) all print() output would be
+# discarded.  Redirect both streams to a rolling log file so diagnostics are
+# always captured.  Also covers the Task Scheduler case where stdout is not
+# visible to the user.
+import builtins as _builtins
 _log_path = watch_dir / 'server_startup.log'
+_log_fh = open(_log_path, 'a', buffering=1)   # line-buffered
+sys.stdout = _log_fh
+sys.stderr = _log_fh
+
 def _log(msg):
-    with open(_log_path, 'a') as _f:
-        import time as _t
-        _f.write(f'{_t.time():.3f}  {msg}\n')
-        _f.flush()
+    import time as _t
+    _log_fh.write(f'{_t.time():.3f}  {msg}\n')
+    _log_fh.flush()
 
 _log(f'started  PID={os.getpid()}  Python={sys.version.split()[0]}')
 _log(f'PATH={os.environ.get("PATH","")[:300]}')

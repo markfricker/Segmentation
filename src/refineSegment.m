@@ -348,8 +348,38 @@ if method == "halfmax"
     return
 end
 
+%% ============================================================
+%% Voronoi-dilation + global Otsu threshold  (automatic intensity gate)
+%% ============================================================
+if method == "otsu"
+    % Compute global Otsu threshold from the intensity image.
+    % graythresh expects a normalised [0,1] image (which im2single gives us).
+    thr = double(graythresh(I));
+
+    seedMask = L > 0;
+    [D, nearest_idx] = bwdist(seedMask);
+    L_voronoi = uint16(L(nearest_idx));
+
+    valid     = (D <= maxExpand & I >= thr) | seedMask;
+    L_dilated = L_voronoi;
+    L_dilated(~valid) = 0;
+
+    uL = setdiff(unique(L_dilated(:)), uint16(0));
+    L_r    = zeros(imgH, imgW, 'uint16');
+    ki_out = uint16(0);
+    for ki = 1:numel(uL)
+        mask_k = (L_dilated == uL(ki));
+        if nnz(mask_k) >= minArea
+            ki_out = ki_out + 1;
+            L_r(mask_k) = ki_out;
+        end
+    end
+    BW_r = single(L_r > 0);
+    return
+end
+
 error('refineSegment:unknownMethod', ...
-      'Unknown method "%s". Choose ''chanvese'', ''dilate'' or ''halfmax''.', method);
+      'Unknown method "%s". Choose ''chanvese'', ''dilate'', ''halfmax'' or ''otsu''.', method);
 
 end
 

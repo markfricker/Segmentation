@@ -292,30 +292,35 @@ if ~cpServerAlive(pidFile)
     if exist(pidFile, 'file'), delete(pidFile); end
     if exist(readyFile, 'file'), delete(readyFile); end
     fprintf('Starting cellpose server (first call ~15 s)...\n');
-    pyExeStr = pyenv().Executable;
+    pyExeStr = char(pyenv().Executable);   % char: exist() rejects string scalars
     if isempty(pyExeStr), pyExeStr = 'python'; end
+    % Use pythonw.exe (no console window) for the server subprocess.
+    % Falls back to python.exe if pythonw.exe is not found alongside it.
+    [pyDir, ~, pyExt] = fileparts(pyExeStr);
+    pywExe = fullfile(pyDir, ['pythonw' pyExt]);
+    if ispc && exist(pywExe, 'file')
+        serverPyExe = pywExe;
+    else
+        serverPyExe = pyExeStr;
+    end
     serverScript = fullfile(srcDir, 'cellposeServer.py');
     % Windows Job Objects propagate to all child processes regardless of
     % console flags (/B, /MIN, etc).  The only reliable escape is the Task
     % Scheduler service, which runs processes in its own session outside any
     % application job object.
     taskName = 'MATLABCellposeServer';
-    tr = sprintf('"%s" "%s" "%s"', pyExeStr, serverScript, workDir);
-    system(sprintf('schtasks /Delete /TN "%s" /F > NUL 2>&1', taskName));
-    createCmd = sprintf('schtasks /Create /F /TN "%s" /TR "%s" /SC ONCE /SD 01/01/2000 /ST 00:00', ...
-                        taskName, strrep(tr, '"', '\"'));
-    system(createCmd);
-    % schtasks /Create defaults DisallowStartIfOnBatteries and
-    % StopIfGoingOnBatteries to TRUE.  On a laptop running on battery the task
-    % is then silently parked in "Queued" and never launches the server, so
-    % MATLAB times out below waiting for server.pid.  Flip both conditions off
-    % (and keep the single-instance policy) before running the task.
-    powerCmd = sprintf(['powershell -NoProfile -Command ' ...
-        '"Set-ScheduledTask -TaskName ''%s'' -Settings ' ...
-        '(New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ' ...
-        '-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew)"'], taskName);
-    system(powerCmd);
-    system(sprintf('schtasks /Run /TN "%s"', taskName));
+    % Write a .ps1 helper to avoid multi-layer quoting issues with paths
+    % that contain spaces (e.g. "Matlab Projects\...").  Register-ScheduledTask
+    % handles spaces in -Execute/-Argument cleanly; schtasks /TR does not.
+    ps1File = fullfile(workDir, 'startServer.ps1');
+    fid = fopen(ps1File, 'w');
+    fprintf(fid, 'Unregister-ScheduledTask -TaskName ''%s'' -Confirm:$false -ErrorAction SilentlyContinue\r\n', taskName);
+    fprintf(fid, '$act = New-ScheduledTaskAction -Execute ''%s'' -Argument ''"%s" "%s"''\r\n', serverPyExe, serverScript, workDir);
+    fprintf(fid, '$set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew\r\n');
+    fprintf(fid, 'Register-ScheduledTask -TaskName ''%s'' -Action $act -Settings $set -Force | Out-Null\r\n', taskName);
+    fprintf(fid, 'Start-ScheduledTask -TaskName ''%s''\r\n', taskName);
+    fclose(fid);
+    system(sprintf('powershell -WindowStyle Hidden -NonInteractive -NoProfile -ExecutionPolicy Bypass -File "%s"', ps1File));
     % Wait for the server to actually finish loading and enter its request
     % loop (server.ready), not just for the process to start (server.pid,
     % written well before the model finishes loading) — up to 120 s.
@@ -392,9 +397,16 @@ if ~exist(pidFile, 'file'), return; end
 try
     pid = str2double(strtrim(fileread(pidFile)));
     if isnan(pid) || pid <= 0, return; end
-    % Check if process with this PID exists using tasklist
-    [~, out] = system(sprintf('tasklist /FI "PID eq %d" /NH 2>NUL', pid));
-    alive = contains(out, num2str(pid));
+    % Hidden PowerShell check avoids cmd window flash on every poll.
+    % char(34) used for the double-quote delimiters around the -Command
+    % argument — MATLAB R2017a+ parses bare "..." as a string-array literal,
+    % so they cannot appear as source characters inside a char-array literal.
+    dq = char(34);
+    psCmd = sprintf( ...
+        ['powershell -WindowStyle Hidden -NonInteractive -NoProfile -Command ' ...
+         dq '(Get-Process -Id %d -ErrorAction SilentlyContinue) -ne $null' dq], pid);
+    [~, out] = system(psCmd);
+    alive = contains(strtrim(out), 'True');
 catch
 end
 end
