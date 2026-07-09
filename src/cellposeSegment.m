@@ -397,16 +397,14 @@ if ~exist(pidFile, 'file'), return; end
 try
     pid = str2double(strtrim(fileread(pidFile)));
     if isnan(pid) || pid <= 0, return; end
-    % Hidden PowerShell check avoids cmd window flash on every poll.
-    % char(34) used for the double-quote delimiters around the -Command
-    % argument — MATLAB R2017a+ parses bare "..." as a string-array literal,
-    % so they cannot appear as source characters inside a char-array literal.
-    dq = char(34);
-    psCmd = sprintf( ...
-        ['powershell -WindowStyle Hidden -NonInteractive -NoProfile -Command ' ...
-         dq '(Get-Process -Id %d -ErrorAction SilentlyContinue) -ne $null' dq], pid);
-    [~, out] = system(psCmd);
-    alive = contains(strtrim(out), 'True');
+    % Plain tasklist, not PowerShell: this is called on every poll (up to
+    % every 0.25 s while waiting up to 120 s for the model to load), and
+    % powershell.exe -- even with -WindowStyle Hidden -- creates its own
+    % console host before the style setting takes effect, so a fast poll
+    % loop shows a visible series of window flashes. tasklist.exe has no
+    % such issue (same fix already used in nerdyServerAlive).
+    [~, out] = system(sprintf('tasklist /FI "PID eq %d" /NH 2>NUL', pid));
+    alive = contains(out, num2str(pid));
 catch
 end
 end
