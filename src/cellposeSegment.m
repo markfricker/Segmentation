@@ -309,18 +309,36 @@ if ~cpServerAlive(pidFile)
     % Scheduler service, which runs processes in its own session outside any
     % application job object.
     taskName = 'MATLABCellposeServer';
-    % Write a .ps1 helper to avoid multi-layer quoting issues with paths
-    % that contain spaces (e.g. "Matlab Projects\...").  Register-ScheduledTask
-    % handles spaces in -Execute/-Argument cleanly; schtasks /TR does not.
-    ps1File = fullfile(workDir, 'startServer.ps1');
-    fid = fopen(ps1File, 'w');
-    fprintf(fid, 'Unregister-ScheduledTask -TaskName ''%s'' -Confirm:$false -ErrorAction SilentlyContinue\r\n', taskName);
-    fprintf(fid, '$act = New-ScheduledTaskAction -Execute ''%s'' -Argument ''"%s" "%s"''\r\n', serverPyExe, serverScript, workDir);
-    fprintf(fid, '$set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew\r\n');
-    fprintf(fid, 'Register-ScheduledTask -TaskName ''%s'' -Action $act -Settings $set -Force | Out-Null\r\n', taskName);
-    fprintf(fid, 'Start-ScheduledTask -TaskName ''%s''\r\n', taskName);
-    fclose(fid);
-    system(sprintf('powershell -WindowStyle Hidden -NonInteractive -NoProfile -ExecutionPolicy Bypass -File "%s"', ps1File));
+    % Uses schtasks.exe (native tool, talks to the Task Scheduler service
+    % directly) plus Set-ScheduledTask (modifies an existing task's
+    % settings) rather than Register-ScheduledTask/Unregister-ScheduledTask
+    % (PowerShell cmdlets that go through the CIM/WMI provider). The
+    % CIM-based cmdlets require an elevated caller to create or modify a
+    % task at all -- independent of the task's own -RunLevel -- which broke
+    % every server (re)start from a normal, non-elevated MATLAB session.
+    % schtasks /Create and Set-ScheduledTask both work fine unelevated
+    % (verified directly on this machine). Same overall mechanism as
+    % nerdyStartServer in nERdyEnhance.m (CurvilinearFilters_sandbox),
+    % including the backslash-escaped-quote /TR construction: schtasks is a
+    % native exe, so its argument has to survive MATLAB's system() -> cmd.exe
+    % round-trip, not PowerShell's own (different, and here unreliable for
+    % multi-segment quoted strings) argument marshalling -- passing it via
+    % an intermediate .ps1 script (as the old Register-ScheduledTask
+    % version did) reintroduces exactly that PowerShell-to-native-exe
+    % quoting problem, so this deliberately calls schtasks the same way
+    % nERdy already does rather than through a written-out script file.
+    tr = sprintf('"%s" "%s" "%s"', serverPyExe, serverScript, workDir);
+    system(sprintf('schtasks /Delete /TN "%s" /F > NUL 2>&1', taskName));
+    createCmd = sprintf( ...
+        'schtasks /Create /F /TN "%s" /TR "%s" /SC ONCE /SD 01/01/2000 /ST 00:00', ...
+        taskName, strrep(tr, '"', '\"'));
+    system(createCmd);
+    powerCmd = sprintf(['powershell -NoProfile -Command ' ...
+        '"Set-ScheduledTask -TaskName ''%s'' -Settings ' ...
+        '(New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries ' ...
+        '-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew)"'], taskName);
+    system(powerCmd);
+    system(sprintf('schtasks /Run /TN "%s"', taskName));
     % Wait for the server to actually finish loading and enter its request
     % loop (server.ready), not just for the process to start (server.pid,
     % written well before the model finishes loading) — up to 120 s.
