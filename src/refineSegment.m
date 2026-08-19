@@ -20,6 +20,14 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %                      'dilate'   — Voronoi-dilation + intensity clipping
 %                                   (faster; expands each label toward the
 %                                    raw-image foreground)
+%                      'halfmax'  — per-object adaptive threshold between
+%                                   local background and peak
+%                      'otsu'     — Voronoi-dilation + global Otsu threshold
+%                      'grabcut'  — per-object GrabCut: the seed mask is the
+%                                   foreground scribble, an outer band of the
+%                                   dilated territory is the background
+%                                   scribble, and the graph-cut solves the
+%                                   true boundary in between
 %   'maxExpand'    : maximum allowed expansion from the original object
 %                    boundary, in pixels (default 5).
 %                    Prevents adjacent objects from merging.
@@ -33,6 +41,16 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %                    'dilate' method (default 0.1 on the [0,1] scale).
 %                    Pixels below this level are treated as background even
 %                    when they fall within the dilation radius.
+%   'bgMargin'     : fraction of maxExpand (default 0.5) that stays an
+%                    "undetermined" band next to the seed for the
+%                    'grabcut' method.  Only the outer rim of the dilated
+%                    territory beyond this margin is given to GrabCut as a
+%                    hard background scribble.  Values that leave no
+%                    usable gap (too close to 0, so the two scribbles
+%                    would touch, or too close to 1, so the background
+%                    scribble vanishes) fall back to the seed unchanged
+%                    for that object -- GrabCut needs a real gap between
+%                    its foreground and background evidence.
 %   'minArea'      : minimum object area in pixels; objects smaller than
 %                    this are discarded from the output (default 10).
 %   'pad'          : bounding-box padding around each object patch used
@@ -86,17 +104,45 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %     at the Voronoi boundary between two neighbouring objects.
 %     Much faster than Chan-Vese (O(N) vs O(N*K) where K = object count).
 %
+%   GRABCUT METHOD ('grabcut')  — per-object, graph-cut with scribbles
+%     For each labelled instance k independently:
+%       1. Build the same exclusive Voronoi territory as 'halfmax' (capped
+%          at maxExpand) — this is both the GrabCut region-of-interest and
+%          the source of the background scribble.
+%       2. Foreground scribble = the object's own seed mask (hard
+%          constraint: these pixels are always foreground).
+%       3. Background scribble = the part of the territory beyond a
+%          maxExpand*bgMargin buffer around the seed (hard constraint:
+%          always background). The band between the seed and this buffer
+%          is left undetermined for the graph-cut to resolve using image
+%          evidence, rather than being told outright.
+%       4. superpixels() oversegments the padded patch; grabcut() solves
+%          for the true object boundary within the territory, seeded by
+%          the two scribbles.
+%       5. Result is hard-clipped to the territory (prevents merging,
+%          matching every other method here).
+%     If the territory is too tight to leave any background band (i.e.
+%     the buffer already covers the whole territory), the seed is
+%     returned unchanged for that object — there is no background
+%     evidence for GrabCut to learn from.
+%     Requires: Image Processing Toolbox (grabcut, superpixels, R2018a+).
+%     Slower than 'dilate'/'halfmax'/'otsu' (per-object superpixel +
+%     graph-cut cost); similar cost profile to 'chanvese'.
+%
 % NOTES
 %   - If L contains no labelled objects (max(L(:)) == 0), the function
 %     returns BW_r = zeros(size(I),'single') and L_r = zeros(size(I),'uint16')
 %     immediately without computation.
 %   - The 'chanvese' method requires activecontour (Image Processing
 %     Toolbox R2014b+); an error is raised if it is absent.
-%   - Both methods preserve object identity: adjacent objects are never
-%     merged.  Chan-Vese uses a no-overwrite accumulator and per-label
-%     area filtering; Dilate uses the Voronoi partition directly with
-%     per-label area filtering.  Neither method routes the final label
-%     image through bwconncomp (which would merge touching objects).
+%   - The 'grabcut' method requires grabcut/superpixels (Image Processing
+%     Toolbox R2018a+); an error is raised if grabcut is absent.
+%   - All methods preserve object identity: adjacent objects are never
+%     merged.  Chan-Vese and GrabCut use a no-overwrite accumulator and
+%     per-label area filtering; the Voronoi-based methods (dilate, otsu,
+%     halfmax, and GrabCut's territory) use the disjoint partition
+%     directly with per-label area filtering.  No method routes the final
+%     label image through bwconncomp (which would merge touching objects).
 %   - Setting maxExpand = 0 with 'dilate' returns exactly the original
 %     foreground (no expansion).  With 'chanvese' it still runs the AC
 %     (which may contract slightly) but clips the result to the original
@@ -132,8 +178,15 @@ function [BW_r, L_r] = refineSegment(I, L, varargin)
 %                                'maxExpand',    8, ...
 %                                'fgThreshold',  0.10);
 %
+%   % GrabCut refinement (seed = foreground scribble, outer dilation
+%   % ring = background scribble)
+%   [BW_r, L_r] = refineSegment(Iraw, L_ws, ...
+%                                'method',    'grabcut', ...
+%                                'maxExpand', 8, ...
+%                                'bgMargin',  0.5);
+%
 % See also: watershedSegment, cellposeSegment, localThresholdFast,
-%           activecontour, bwdist, imdilate, label2rgb
+%           activecontour, grabcut, superpixels, bwdist, imdilate, label2rgb
 
 %% ----------- input parsing -----------
 p = inputParser;
@@ -145,6 +198,7 @@ addParameter(p, 'nIter',        100);
 addParameter(p, 'smoothFactor', 1.0);
 addParameter(p, 'fgThreshold',  0.1);
 addParameter(p, 'level',        0.5);  % 'halfmax': fraction between local bg and peak
+addParameter(p, 'bgMargin',     0.5);  % 'grabcut': fraction of maxExpand kept undetermined next to the seed
 addParameter(p, 'minArea',      10);
 addParameter(p, 'pad',          []);   % derived below if empty
 parse(p, I, L, varargin{:});
@@ -155,6 +209,7 @@ nIter      = p.Results.nIter;
 smoothFact = p.Results.smoothFactor;
 fgThresh   = p.Results.fgThreshold;
 level      = p.Results.level;
+bgMargin   = p.Results.bgMargin;
 minArea    = p.Results.minArea;
 padSz      = p.Results.pad;
 
@@ -378,8 +433,105 @@ if method == "otsu"
     return
 end
 
+%% ============================================================
+%% GrabCut with seed=foreground / dilation-ring=background scribbles
+%% ============================================================
+if method == "grabcut"
+
+    if ~exist('grabcut', 'file')
+        error('refineSegment:noGrabcut', ...
+              ['grabcut() not found.  The ''grabcut'' method requires ' ...
+               'the Image Processing Toolbox (R2018a+).']);
+    end
+
+    % Exclusive Voronoi territory per label, capped at maxExpand -- same
+    % construction as 'halfmax'.  This is both the GrabCut region of
+    % interest (the zone GrabCut is allowed to grow into) and the source
+    % of the background scribble.
+    seedMask = L > 0;
+    [D, nearest_idx] = bwdist(seedMask);
+    L_terr = uint16(L(nearest_idx));
+    L_terr(D > maxExpand) = 0;
+
+    nLabels = double(max(L(:)));
+    L_accum = zeros(imgH, imgW, 'uint16');
+
+    % bufRadius < 1 leaves no gap between the foreground and background
+    % scribbles; since GrabCut's graph-cut operates on whole superpixels
+    % (not individual pixels), a superpixel straddling that zero-width
+    % boundary would receive contradictory hard constraints and can drop
+    % genuine seed pixels rather than simply refuse to expand. Treat it
+    % the same as "no background evidence": skip GrabCut, keep the seed.
+    bufRadius = round(maxExpand * bgMargin);
+    hasBuffer = bufRadius >= 1;
+    if hasBuffer
+        seBuffer = strel('disk', bufRadius);
+    end
+
+    for k = 1:nLabels
+        objMask  = (L == k);
+        terrMask = (L_terr == k);
+        if ~any(objMask(:)) || ~any(terrMask(:)), continue; end
+
+        % --- padded bounding box around the territory (clamped) ---
+        [rows, cols] = find(terrMask);
+        r1 = max(1,    min(rows) - 2);
+        r2 = min(imgH, max(rows) + 2);
+        c1 = max(1,    min(cols) - 2);
+        c2 = min(imgW, max(cols) + 2);
+
+        I_patch    = I(r1:r2, c1:c2);
+        obj_patch  = objMask(r1:r2, c1:c2);
+        terr_patch = terrMask(r1:r2, c1:c2);
+
+        bg_patch = false(size(obj_patch));
+        if hasBuffer
+            % background scribble: the outer rim of the territory beyond
+            % a bufRadius buffer around the seed.  The band between the
+            % seed and this buffer is left undetermined for GrabCut to
+            % resolve from image evidence rather than being told outright.
+            buf_patch = imdilate(obj_patch, seBuffer);
+            bg_patch  = terr_patch & ~buf_patch;
+        end
+
+        if ~any(bg_patch(:))
+            % No room for a background scribble (bgMargin too high, or
+            % too low to leave a safe gap, for this territory) -- nothing
+            % for GrabCut to learn from.
+            refined_patch = obj_patch;
+        else
+            nSP = max(20, round(numel(I_patch) / 9));
+            Lsp = superpixels(I_patch, nSP);
+            refined_patch = grabcut(I_patch, Lsp, terr_patch, ...
+                find(obj_patch), find(bg_patch));
+            refined_patch = refined_patch & terr_patch;   % hard clip (belt-and-braces)
+        end
+
+        % --- write back: earlier objects take priority, no overwrites ---
+        row_range = r1:r2;
+        col_range = c1:c2;
+        new = refined_patch & (L_accum(row_range, col_range) == 0);
+        L_patch = L_accum(row_range, col_range);
+        L_patch(new) = uint16(k);
+        L_accum(row_range, col_range) = L_patch;
+    end
+
+    for k = 1:nLabels
+        if nnz(L_accum == k) < minArea
+            L_accum(L_accum == k) = 0;
+        end
+    end
+    uL  = setdiff(unique(L_accum(:)), uint16(0));
+    L_r = zeros(imgH, imgW, 'uint16');
+    for ki = 1:numel(uL)
+        L_r(L_accum == uL(ki)) = ki;
+    end
+    BW_r = single(L_r > 0);
+    return
+end
+
 error('refineSegment:unknownMethod', ...
-      'Unknown method "%s". Choose ''chanvese'', ''dilate'', ''halfmax'' or ''otsu''.', method);
+      'Unknown method "%s". Choose ''chanvese'', ''dilate'', ''halfmax'', ''otsu'' or ''grabcut''.', method);
 
 end
 

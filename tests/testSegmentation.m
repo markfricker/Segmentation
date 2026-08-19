@@ -12,11 +12,13 @@ classdef testSegmentation < matlab.unittest.TestCase
 % COVERAGE
 %   localThresholdFast  — 10 tests
 %   watershedSegment    — 16 tests
-%   refineSegment       — 13 tests
+%   refineSegment       — 16 tests
 %
 % REQUIREMENTS
-%   MATLAB R2014b+ (matlab.unittest framework; activecontour for refineSegment)
-%   Image Processing Toolbox (bwdist, watershed, imgaussfilt, activecontour)
+%   MATLAB R2018a+ (matlab.unittest framework; activecontour and grabcut
+%   for refineSegment)
+%   Image Processing Toolbox (bwdist, watershed, imgaussfilt, activecontour,
+%   grabcut, superpixels)
 %   All src/ functions on the path (added automatically by TestClassSetup).
 
     properties (Constant)
@@ -406,6 +408,38 @@ classdef testSegmentation < matlab.unittest.TestCase
             tc.verifyError( ...
                 @() refineSegment(I, L, 'method', 'frobnicator'), ...
                 'refineSegment:unknownMethod');
+        end
+
+        function testRS_smoke_grabcut(tc)
+            % GrabCut call must complete without error.
+            [I, L] = testSegmentation.blobWithLabel();
+            [BW_r, L_r] = refineSegment(I, L, 'method', 'grabcut', ...
+                                               'maxExpand', 6, 'bgMargin', 0.5);
+            tc.verifyNotEmpty(BW_r);
+            tc.verifyNotEmpty(L_r);
+        end
+
+        function testRS_grabcut_expands(tc)
+            % GrabCut refinement must increase (or equal) the foreground area,
+            % using the seed as the foreground scribble and the outer dilation
+            % ring as the background scribble.
+            [I, L] = testSegmentation.blobWithLabel();
+            areaIn  = nnz(L > 0);
+            BW_r    = refineSegment(I, L, 'method', 'grabcut', ...
+                                    'maxExpand', 6, 'bgMargin', 0.5);
+            areaOut = nnz(BW_r);
+            tc.verifyGreaterThanOrEqual(areaOut, areaIn);
+        end
+
+        function testRS_grabcut_maxExpand0_noGrowth(tc)
+            % grabcut with maxExpand=0 must not add any new foreground pixels
+            % (no territory to grow into, and no room for a background
+            % scribble either).
+            [I, L] = testSegmentation.blobWithLabel();
+            areaIn  = nnz(L > 0);
+            BW_r    = refineSegment(I, L, 'method', 'grabcut', 'maxExpand', 0);
+            areaOut = nnz(BW_r);
+            tc.verifyEqual(areaOut, areaIn);
         end
 
     end
