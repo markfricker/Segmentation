@@ -11,8 +11,15 @@ function [BW, level] = globalThresholdFast(I, varargin)
 %
 % NAME-VALUE PAIRS
 %   'method'     : thresholding method (default 'li')
-%                    'li'    — Li & Tan iterative minimum cross-entropy
-%                    'kapur' — Kapur-Sahoo-Wong maximum-entropy
+%                    'li'           — Li & Tan iterative minimum cross-entropy
+%                    'kapur'        — Kapur-Sahoo-Wong maximum-entropy
+%                    'triangle'     — Zack geometric triangle method
+%                    'triangleOtsu' — triangle and Otsu, both computed in
+%                                     log10 space on the nonzero pixels only,
+%                                     level = min(triangle, otsu). Matches
+%                                     the Frangi-threshold recipe used by
+%                                     the Nellie organelle segmentation tool
+%                                     (Lefebvre et al., Nat Methods 2025).
 %   'bias'       : multiplier applied to the computed level (default 1.0).
 %                  < 1 lowers the threshold (more foreground), > 1 raises it.
 %                  A single global knob for pulling in dim structure without
@@ -55,6 +62,27 @@ function [BW, level] = globalThresholdFast(I, varargin)
 %   a low threshold when the dark background carries most of the entropy;
 %   the two methods are offered together so they can be compared.
 %
+%   TRIANGLE (Zack et al., 1977).  Purely geometric: draws a line from the
+%   histogram peak to the far end of its populated range, and picks the bin
+%   with maximum perpendicular distance from that line.  Designed for the
+%   sharply skewed, long-tailed histograms typical of ridge/vesselness-
+%   filtered images (a tall background spike near zero with a thin bright
+%   tail) -- exactly the case where Otsu's equal-variance assumption breaks
+%   down and biases the threshold too high, and where Li/Kapur's entropy
+%   assumptions are a poorer fit than the pure geometric argument. Falls
+%   back to the opposite side of the peak if that side is empty.
+%
+%   TRIANGLEOTSU (log-space combination).  Ridge/vesselness responses often
+%   span several orders of magnitude between the noise floor and real
+%   structure, which is hard for either method to split well even after
+%   'triangle' finds a reasonable answer in linear space.  Working in log10
+%   space (excluding exact/near-zero pixels first, since log needs positive
+%   values) spreads that range out so both triangle and Otsu see a more
+%   usable shape; taking the minimum of the two is a conservative hedge --
+%   whichever method wants to include more of the dim tail wins.  This is
+%   the exact recipe Nellie (github.com/aelefebv/nellie) uses to threshold
+%   its Frangi filter output.
+%
 % NOTES
 %   - The histogram spans [min(I), max(I)] with nbins bins; the returned
 %     level is a bin centre on that scale.  For an image normalised to
@@ -74,6 +102,14 @@ function [BW, level] = globalThresholdFast(I, varargin)
 %   gray-level picture thresholding using the entropy of the histogram.
 %   Computer Vision, Graphics, and Image Processing, 29(3), 273-285.
 %
+%   Zack, G.W., Rogers, W.E. and Latt, S.A. (1977). Automatic measurement
+%   of sister chromatid exchange frequency. Journal of Histochemistry and
+%   Cytochemistry, 25(7), 741-753.
+%
+%   Lefebvre, A.E.Y.T. et al. (2025). Nellie: automated organelle
+%   segmentation, tracking and hierarchical feature extraction in 2D/3D
+%   live-cell microscopy. Nature Methods.
+%
 %   Sezgin, M. and Sankur, B. (2004). Survey over image thresholding
 %   techniques and quantitative performance evaluation. Journal of
 %   Electronic Imaging, 13(1), 146-165.
@@ -84,6 +120,12 @@ function [BW, level] = globalThresholdFast(I, varargin)
 %
 %   % Kapur, pulled in slightly to recover dim tubule
 %   [BW, lvl] = globalThresholdFast(I, 'method', 'kapur', 'bias', 0.9);
+%
+%   % Triangle threshold on a Frangi/vesselness-enhanced ridge image
+%   [BW, lvl] = globalThresholdFast(I, 'method', 'triangle');
+%
+%   % Nellie-style combined threshold on the same image
+%   [BW, lvl] = globalThresholdFast(I, 'method', 'triangleOtsu');
 %
 % See also: localThresholdFast, watershedSegment, graythresh, otsuthresh
 
@@ -132,9 +174,13 @@ switch method
         level = localLi(counts, centres, meanI, lo, hi, nbins);
     case "kapur"
         level = localKapur(counts, centres, meanI);
+    case "triangle"
+        level = localTriangle(counts, centres, meanI);
+    case "triangleotsu"
+        level = localTriangleOtsuLog(v, nbins, meanI);
     otherwise
         error('globalThresholdFast:unknownMethod', ...
-              'Unknown method "%s". Use ''li'' or ''kapur''.', method);
+              'Unknown method "%s". Use ''li'', ''kapur'', ''triangle'' or ''triangleOtsu''.', method);
 end
 
 %% ---------------- bias + binarise ----------------
@@ -235,4 +281,128 @@ function t = localKapur(counts, x, meanI)
     else
         t = x(tIdx);
     end
+end
+
+% =========================================================================
+function t = localTriangle(counts, x, meanI)
+% Zack, Rogers & Latt (1977) geometric triangle threshold.
+%
+% Draws a line from the histogram peak to the far end of its populated
+% range (whichever side of the peak is longer), then picks the bin with
+% maximum perpendicular distance from that line -- the point where the
+% histogram "bulges" furthest from a straight decay, which sits just past
+% the tail of the background peak for the long-tailed histograms typical
+% of ridge/vesselness-filtered images.
+
+    [peakVal, peakIdx] = max(counts);
+    nz = find(counts > 0);
+    if isempty(nz) || numel(nz) < 2
+        t = meanI;
+        return
+    end
+    firstNZ = nz(1);
+    lastNZ  = nz(end);
+
+    % Use whichever side of the peak has the longer populated run --
+    % that is the side with a tail worth splitting.
+    if (peakIdx - firstNZ) >= (lastNZ - peakIdx)
+        idxRange = firstNZ:peakIdx;
+        endIdx   = firstNZ;
+    else
+        idxRange = peakIdx:lastNZ;
+        endIdx   = lastNZ;
+    end
+
+    x1 = peakIdx; y1 = peakVal;
+    x2 = endIdx;  y2 = counts(endIdx);
+    lineLen = hypot(y2 - y1, x2 - x1);
+
+    if lineLen == 0 || numel(idxRange) < 2
+        t = meanI;
+        return
+    end
+
+    idxRange = idxRange(:)';
+    y0 = counts(idxRange)';
+    d  = abs((y2 - y1) .* idxRange - (x2 - x1) .* y0 + x2*y1 - y2*x1) / lineLen;
+    [~, k] = max(d);
+
+    t = x(idxRange(k));
+end
+
+% =========================================================================
+function t = localOtsu(counts, x)
+% Standard Otsu (1979) between-class-variance threshold, vectorised over a
+% precomputed histogram. Returns the bin centre maximising the between-class
+% variance of a binary split at that bin.
+
+    pmf = counts / sum(counts);
+    cumP    = cumsum(pmf);
+    cumMean = cumsum(pmf .* x);
+    globalMean = cumMean(end);
+
+    denom = cumP .* (1 - cumP);
+    sigmaB2 = (globalMean .* cumP - cumMean).^2 ./ max(denom, eps(class(x)));
+    sigmaB2(end) = -inf;   % split after the last bin is degenerate (cumP=1)
+
+    [~, idx] = max(sigmaB2);
+    t = x(idx);
+end
+
+% =========================================================================
+function t = localTriangleOtsuLog(v, nbins, meanI)
+% Nellie's Frangi-threshold recipe: triangle and Otsu, both computed in
+% log10 space on the nonzero pixels only, then take the minimum of the two
+% -- see the TRIANGLEOTSU note in the function header for the rationale.
+% v is the full (non-log) sample vector already used for the outer
+% function's linear histogram; this rebuilds its own histogram in log
+% space since the preprocessing (exclude zero, log-transform) differs from
+% every other method here.
+%
+% "Nonzero" is a hard v>0 test, but filters such as MATLAB's FrangiFilter2D
+% leave floating-point noise residuals (~1e-7) across most of the nominal
+% background rather than exact zeros, so v>0 barely excludes anything and
+% a handful of near-machine-epsilon outlier pixels can stretch log10(v)'s
+% range by several extra decades. localTriangle's "longer arm = tail"
+% heuristic then mistakes that near-empty, spuriously long arm for the real
+% signal tail. Building the log-histogram's range from the 0.5th/99.5th
+% percentile of logV (not raw min/max) keeps a few outlier pixels from
+% distorting that geometry -- histcounts silently drops the (very few)
+% values outside the trimmed range, it does not error or clip them in.
+
+    vPos = v(v > 0);
+    if isempty(vPos)
+        t = meanI;
+        return
+    end
+
+    logV    = log10(vPos);
+    logMean = mean(logV);
+    loL = localQuantile(logV, 0.005);
+    hiL = localQuantile(logV, 0.995);
+
+    if hiL <= loL
+        t = 10 ^ logMean;
+        return
+    end
+
+    edgesL   = linspace(loL, hiL, nbins + 1);
+    centresL = (edgesL(1:end-1) + edgesL(2:end)) / 2;
+    centresL = centresL(:);
+    countsL  = histcounts(logV, edgesL).';
+
+    triLevel  = localTriangle(countsL, centresL, logMean);
+    otsuLevel = localOtsu(countsL, centresL);
+
+    t = 10 ^ min(triLevel, otsuLevel);
+end
+
+% =========================================================================
+function q = localQuantile(x, p)
+% Dependency-free quantile (avoids requiring Statistics and Machine
+% Learning Toolbox's prctile/quantile for this one call). p in [0, 1].
+    xs = sort(x(:));
+    n  = numel(xs);
+    idx = max(1, min(n, round(p * n)));
+    q = xs(idx);
 end
