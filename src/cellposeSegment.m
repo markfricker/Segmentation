@@ -6,8 +6,9 @@ function [L, BW] = cellposeSegment(I, params)
 %   [L, BW] = cellposeSegment(I, params)
 %
 % INPUTS
-%   I       - 2-D grayscale image (any numeric class); converted to
-%             single [0,1] internally via im2single.
+%   I       - 2-D grayscale image, or a Y x X x Z grayscale stack for 3-D
+%             segmentation (any numeric class); converted to single [0,1]
+%             internally via im2single.
 %   params  - optional struct with fields:
 %            .model         = 'cyto3' % Cellpose model name or absolute path
 %                                     % to a custom model file
@@ -43,9 +44,23 @@ function [L, BW] = cellposeSegment(I, params)
 %                                     % images combined with nIter = 2000
 %                                     % can take several minutes; raise this
 %                                     % further for large frames.
+%            .do3D          = size(I,3) > 1
+%                                     % true: segment I as one Y x X x Z
+%                                     % volume with Cellpose's native 3-D
+%                                     % mode (network run on XY, XZ and YZ
+%                                     % planes, flows combined in 3-D), so
+%                                     % objects get one label across slices.
+%                                     % flowThreshold is ignored in 3-D
+%                                     % (Cellpose does not use it there).
+%                                     % A multi-slice I with do3D = false is
+%                                     % an error.
+%            .anisotropy    = 1       % Z step / XY pixel size (e.g. 2 if
+%                                     % Z is sampled half as densely as XY).
+%                                     % 3-D only. diameter stays in XY px.
 %
 % OUTPUTS
-%   L       - label image, uint16, same size as I.
+%   L       - label image, same size as I; uint16, or uint32 if a 3-D
+%             volume contains more than 65535 objects.
 %             Each detected object carries a unique positive integer label.
 %             Background = 0.  Use label2rgb(L) for display.
 %   BW      - binary segmentation mask, single precision, same size as I.
@@ -126,8 +141,14 @@ function [L, BW] = cellposeSegment(I, params)
 %     an informative error if the add-on is not installed.
 %   - Cellpose internally normalises the input image; passing normalised
 %     single [0,1] or raw uint8/uint16 both give equivalent results.
-%   - For 3-D stacks use segmentCells3D() from the Medical Imaging Toolbox
-%     directly; cellposeSegment processes 2-D slices only.
+%   - 3-D stacks (do3D) go through the same server as 2-D, i.e. the
+%     project's own Cellpose 3 install, not the Medical Imaging Toolbox
+%     add-on's segmentCells3D (that add-on bundles Cellpose 2.2.3 with a
+%     CPU-only PyTorch and hangs on construction on this machine).
+%     minSize is then in voxels.
+%   - The server reports a protocol version; an older server still running
+%     from before an update is stopped and restarted automatically, so it
+%     can never silently treat a 3-D request as a 2-D one.
 %   - When nIter > 0, cellposeSegment bypasses segmentCells2D entirely and
 %     calls the Python CellposeModel.eval() API directly (since the MATLAB
 %     wrapper does not expose niter).  This requires MATLAB R2022a+ for
@@ -225,12 +246,24 @@ if ~isfield(params, 'nIter'),         params.nIter         = 200;       end
 if ~isfield(params, 'minSize'),       params.minSize       = 0;       end
 if ~isfield(params, 'normalize'),     params.normalize     = true;    end
 if ~isfield(params, 'timeout'),       params.timeout       = 900;     end
+if ~isfield(params, 'do3D'),          params.do3D          = size(I,3) > 1; end
+if ~isfield(params, 'anisotropy'),    params.anisotropy    = 1;       end
 
 % --- input validation -------------------------------------------------------
-if size(I, 3) > 1
+if ndims(I) > 3
     error('cellposeSegment:badInput', ...
-          'cellposeSegment: expected 2-D grayscale image, got %d-channel input.', ...
+          'cellposeSegment: expected a 2-D image or Y x X x Z stack, got %d-D input.', ...
+          ndims(I));
+end
+if size(I, 3) > 1 && ~params.do3D
+    error('cellposeSegment:badInput', ...
+          ['cellposeSegment: got a %d-slice stack with do3D = false.\n' ...
+           'Set params.do3D = true for 3-D segmentation, or pass one slice.'], ...
           size(I,3));
+end
+if params.do3D && size(I, 3) < 2
+    error('cellposeSegment:badInput', ...
+          'cellposeSegment: do3D = true needs a Y x X x Z stack with Z >= 2.');
 end
 
 try
@@ -284,6 +317,20 @@ if ~exist(workDir, 'dir'), mkdir(workDir); end
 % ---- ensure server is running -----------------------------------------------
 pidFile   = fullfile(workDir, 'server.pid');
 readyFile = fullfile(workDir, 'server.ready');
+% Protocol this client speaks; must match PROTOCOL in cellposeServer.py.
+% A server left running from an older copy of the script would silently
+% ignore newer request fields (e.g. do3d), so stop it and start a fresh one.
+cpProtocol = 2;
+if cpServerAlive(pidFile)
+    t0 = tic;
+    while ~cpServerReady(pidFile, readyFile) && toc(t0) < 120
+        pause(0.25);
+    end
+    if cpServerReady(pidFile, readyFile) && cpServerProtocol(readyFile) < cpProtocol
+        fprintf('Restarting cellpose server (older version running)...\n');
+        cpStopServer(workDir, pidFile);
+    end
+end
 if ~cpServerAlive(pidFile)
     % Remove a stale PID file left behind by a server that has since died,
     % so cpServerAlive sees the fresh PID written by the new server rather
@@ -377,10 +424,12 @@ flowthreshold = params.flowThreshold;%#ok<NASGU>
 niter         = params.nIter;        %#ok<NASGU>
 minsize       = params.minSize;      %#ok<NASGU>
 timeout       = params.timeout;      %#ok<NASGU>
+do3d          = double(logical(params.do3D)); %#ok<NASGU>
+anisotropy    = double(params.anisotropy);    %#ok<NASGU>
 % Write to a .tmp file then rename so the server never sees a partial write.
 tmpFile = [reqFile '.tmp'];
 save(tmpFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
-     'niter', 'minsize', 'timeout', '-v6');
+     'niter', 'minsize', 'timeout', 'do3d', 'anisotropy', '-v6');
 movefile(tmpFile, reqFile);
 
 % ---- poll for result --------------------------------------------------------
@@ -404,8 +453,42 @@ end
 
 result = load(resFile);
 delete(resFile);
-L  = uint16(result.L);
+if max(result.L(:)) > intmax('uint16')
+    L = uint32(result.L);   % large 3-D volumes: uint16 would saturate labels
+else
+    L = uint16(result.L);
+end
 BW = single(L > 0);
+end
+
+% ---- helper: protocol version of the running server -------------------------
+% server.ready holds "<pid>\nprotocol=<n>"; servers from before the protocol
+% line existed wrote only the PID and count as protocol 1.
+function p = cpServerProtocol(readyFile)
+p = 1;
+try
+    tok = regexp(fileread(readyFile), 'protocol=(\d+)', 'tokens', 'once');
+    if ~isempty(tok), p = str2double(tok{1}); end
+catch
+end
+end
+
+% ---- helper: stop the running server ----------------------------------------
+% Asks politely via exit.req (checked between requests), then force-kills
+% the PID if it has not gone within 30 s.
+function cpStopServer(workDir, pidFile)
+pid = str2double(strtrim(fileread(pidFile)));
+fid = fopen(fullfile(workDir, 'exit.req'), 'w'); fclose(fid);
+t0 = tic;
+while cpServerAlive(pidFile) && toc(t0) < 30
+    pause(0.25);
+end
+if cpServerAlive(pidFile) && ~isnan(pid)
+    system(sprintf('taskkill /PID %d /F > NUL 2>&1', pid));
+    pause(1);
+end
+exitFile = fullfile(workDir, 'exit.req');
+if exist(exitFile, 'file'), delete(exitFile); end
 end
 
 % ---- helper: is the server process alive? -----------------------------------

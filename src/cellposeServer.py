@@ -13,8 +13,20 @@ Results are written as *.res.mat; errors as *.err files.
 
 Stop the server by creating an 'exit.req' file in watch_dir, or just
 close the PowerShell window / call terminate from MATLAB.
+
+3-D: a request with do3d = 1 carries I as a Y x X x Z stack (MATLAB order)
+and is segmented with Cellpose's native do_3D mode (network run on the XY,
+XZ and YZ planes, flows combined in 3-D).  anisotropy = Z step / XY pixel
+size.  flow_threshold is not used by Cellpose in 3-D.
 """
 import os, sys
+
+# Request/response protocol version, written into server.ready so the MATLAB
+# client can detect (and restart) a server running an older copy of this
+# script.  Bump whenever the request fields or their meaning change.
+#   1 - 2-D only (implicit: ready file held just the PID)
+#   2 - adds do3d / anisotropy; labels may be uint32
+PROTOCOL = 2
 
 # ---- Strip MATLAB runtime from PATH before ANY other imports ----------------
 # schtasks / start /B inherit MATLAB's environment, including its runtime DLLs
@@ -144,7 +156,7 @@ except Exception as e:
 # able to process the request loop below (worst case, first request pays
 # the model-load cost lazily inside get_model). Written last, right before
 # entering the loop, so clients polling for this file never see it early.
-ready_file.write_text(str(os.getpid()))
+ready_file.write_text(f'{os.getpid()}\nprotocol={PROTOCOL}\n')
 
 # ---- request loop -----------------------------------------------------------
 while True:
@@ -191,6 +203,14 @@ while True:
             niter   = int(s('niter',      0))
             minsize = int(s('minsize',    0))
             timeout = s('timeout',      900.0)
+            do3d    = bool(s('do3d',      0))
+            aniso   = float(s('anisotropy', 1.0))
+
+            if do3d and I.ndim != 3:
+                raise ValueError(f'do3d requested but I has {I.ndim} dimensions '
+                                 f'(expected Y x X x Z)')
+            if not do3d and I.ndim != 2:
+                raise ValueError(f'2-D request but I has shape {I.shape}')
 
             m = get_model(model)
 
@@ -199,14 +219,29 @@ while True:
             def _run():
                 try:
                     kwargs = dict(diameter=diam, cellprob_threshold=cp,
-                                  flow_threshold=ft, do_3D=False)
+                                  flow_threshold=ft, do_3D=do3d)
                     if niter > 0:
                         kwargs['niter'] = niter
                     # Suppress Cellpose's own stdout/stderr chatter
                     with contextlib.redirect_stdout(io.StringIO()), \
                          contextlib.redirect_stderr(io.StringIO()):
-                        masks, _, _ = m.eval([I], **kwargs)
-                    _res[0] = masks[0].astype(np.uint16)
+                        if do3d:
+                            # MATLAB Y x X x Z -> Cellpose Z x Y x X; single
+                            # grayscale channel, Z axis stated explicitly so
+                            # Cellpose never guesses it from the shape.
+                            V = np.ascontiguousarray(np.transpose(I, (2, 0, 1)))
+                            masks, _, _ = m.eval(V, channels=[0, 0],
+                                                 channel_axis=None, z_axis=0,
+                                                 anisotropy=aniso, **kwargs)
+                            masks = np.transpose(masks, (1, 2, 0))
+                        else:
+                            masks, _, _ = m.eval([I], **kwargs)
+                            masks = masks[0]
+                    # 3-D volumes can exceed 65535 objects; don't let the
+                    # cast wrap label ids.
+                    dt = np.uint16 if masks.max() <= np.iinfo(np.uint16).max \
+                        else np.uint32
+                    _res[0] = masks.astype(dt)
                 except Exception as e:
                     _res[1] = traceback.format_exc()
 
@@ -222,20 +257,20 @@ while True:
 
             L = _res[0]
 
-            # minSize filter
+            # minSize filter (px^2 in 2-D, voxels in 3-D); relabel 1..k.
+            # Lookup-table remap rather than one full-image pass per object,
+            # which is prohibitive for large 3-D volumes.
             if minsize > 0 and L.max() > 0:
-                from skimage import measure
-                props = measure.regionprops(L)
-                Lnew  = np.zeros_like(L)
-                k = 0
-                for prop in props:
-                    if prop.area >= minsize:
-                        k += 1
-                        Lnew[L == prop.label] = k
-                L = Lnew
+                counts = np.bincount(L.ravel())
+                keep   = counts >= minsize
+                keep[0] = False
+                lut = np.zeros(counts.size, dtype=L.dtype)
+                lut[keep] = np.arange(1, int(keep.sum()) + 1, dtype=L.dtype)
+                L = lut[L]
 
             sio.savemat(str(res_file), {'L': L}, format='5')
-            print(f'[server] done {time.time()-t0:.1f}s  n={int(L.max())}', flush=True)
+            print(f'[server] done {time.time()-t0:.1f}s  n={int(L.max())}  '
+                  f'{"3D" if do3d else "2D"} {L.shape}', flush=True)
 
         except Exception:
             err_file.write_text(traceback.format_exc())
