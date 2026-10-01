@@ -31,7 +31,8 @@ import os, sys
 #   1 - 2-D only (implicit: ready file held just the PID)
 #   2 - adds do3d / anisotropy; labels may be uint32
 #   3 - adds stitch (2-D per plane + IoU stitching for a 3-D stack)
-PROTOCOL = 3
+#   4 - result written to a temp name then renamed (no partial-read race)
+PROTOCOL = 4
 
 # ---- Strip MATLAB runtime from PATH before ANY other imports ----------------
 # schtasks / start /B inherit MATLAB's environment, including its runtime DLLs
@@ -281,7 +282,11 @@ while True:
                 lut[keep] = np.arange(1, int(keep.sum()) + 1, dtype=L.dtype)
                 L = lut[L]
 
-            sio.savemat(str(res_file), {'L': L}, format='5')
+            # Write under a temporary name, then rename: the client polls for
+            # res_file and must never load (or try to delete) a partial write.
+            tmp_res = watch_dir / f'{base}.res.tmp'
+            sio.savemat(str(tmp_res), {'L': L}, format='5')
+            os.replace(tmp_res, res_file)
             print(f'[server] done {time.time()-t0:.1f}s  n={int(L.max())}  '
                   f'{("3D-stitch" if stitch > 0 else "3D") if do3d else "2D"} '
                   f'{L.shape}', flush=True)

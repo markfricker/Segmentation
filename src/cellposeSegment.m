@@ -332,7 +332,7 @@ readyFile = fullfile(workDir, 'server.ready');
 % Protocol this client speaks; must match PROTOCOL in cellposeServer.py.
 % A server left running from an older copy of the script would silently
 % ignore newer request fields (e.g. do3d), so stop it and start a fresh one.
-cpProtocol = 3;
+cpProtocol = 4;
 if cpServerAlive(pidFile)
     t0 = tic;
     while ~cpServerReady(pidFile, readyFile) && toc(t0) < 120
