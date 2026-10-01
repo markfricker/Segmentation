@@ -57,6 +57,17 @@ function [L, BW] = cellposeSegment(I, params)
 %            .anisotropy    = 1       % Z step / XY pixel size (e.g. 2 if
 %                                     % Z is sampled half as densely as XY).
 %                                     % 3-D only. diameter stays in XY px.
+%                                     % Unused in stitch mode.
+%            .stitchThreshold = 0     % 3-D only. 0 = native 3-D mode (above).
+%                                     % > 0: segment each Z plane in 2-D
+%                                     % (each plane normalised on its own)
+%                                     % and link labels in adjacent planes
+%                                     % whose IoU exceeds this value
+%                                     % (Cellpose stitch_threshold; ~0.1-0.3).
+%                                     % Much faster than native 3-D (2-D
+%                                     % cost per plane) and robust to
+%                                     % intensity changing with depth;
+%                                     % flowThreshold applies as in 2-D.
 %
 % OUTPUTS
 %   L       - label image, same size as I; uint16, or uint32 if a 3-D
@@ -248,6 +259,7 @@ if ~isfield(params, 'normalize'),     params.normalize     = true;    end
 if ~isfield(params, 'timeout'),       params.timeout       = 900;     end
 if ~isfield(params, 'do3D'),          params.do3D          = size(I,3) > 1; end
 if ~isfield(params, 'anisotropy'),    params.anisotropy    = 1;       end
+if ~isfield(params, 'stitchThreshold'), params.stitchThreshold = 0;   end
 
 % --- input validation -------------------------------------------------------
 if ndims(I) > 3
@@ -320,7 +332,7 @@ readyFile = fullfile(workDir, 'server.ready');
 % Protocol this client speaks; must match PROTOCOL in cellposeServer.py.
 % A server left running from an older copy of the script would silently
 % ignore newer request fields (e.g. do3d), so stop it and start a fresh one.
-cpProtocol = 2;
+cpProtocol = 3;
 if cpServerAlive(pidFile)
     t0 = tic;
     while ~cpServerReady(pidFile, readyFile) && toc(t0) < 120
@@ -426,10 +438,11 @@ minsize       = params.minSize;      %#ok<NASGU>
 timeout       = params.timeout;      %#ok<NASGU>
 do3d          = double(logical(params.do3D)); %#ok<NASGU>
 anisotropy    = double(params.anisotropy);    %#ok<NASGU>
+stitch        = double(params.stitchThreshold); %#ok<NASGU>
 % Write to a .tmp file then rename so the server never sees a partial write.
 tmpFile = [reqFile '.tmp'];
 save(tmpFile, 'I', 'model', 'diameter', 'cellprob', 'flowthreshold', ...
-     'niter', 'minsize', 'timeout', 'do3d', 'anisotropy', '-v6');
+     'niter', 'minsize', 'timeout', 'do3d', 'anisotropy', 'stitch', '-v6');
 movefile(tmpFile, reqFile);
 
 % ---- poll for result --------------------------------------------------------

@@ -18,6 +18,10 @@ close the PowerShell window / call terminate from MATLAB.
 and is segmented with Cellpose's native do_3D mode (network run on the XY,
 XZ and YZ planes, flows combined in 3-D).  anisotropy = Z step / XY pixel
 size.  flow_threshold is not used by Cellpose in 3-D.
+With stitch > 0 the same stack is instead segmented plane by plane in 2-D
+(each plane normalised separately) and labels are linked between adjacent
+planes when their IoU exceeds stitch (Cellpose stitch_threshold); anisotropy
+is unused and flow_threshold applies, as in 2-D.
 """
 import os, sys
 
@@ -26,7 +30,8 @@ import os, sys
 # script.  Bump whenever the request fields or their meaning change.
 #   1 - 2-D only (implicit: ready file held just the PID)
 #   2 - adds do3d / anisotropy; labels may be uint32
-PROTOCOL = 2
+#   3 - adds stitch (2-D per plane + IoU stitching for a 3-D stack)
+PROTOCOL = 3
 
 # ---- Strip MATLAB runtime from PATH before ANY other imports ----------------
 # schtasks / start /B inherit MATLAB's environment, including its runtime DLLs
@@ -205,6 +210,7 @@ while True:
             timeout = s('timeout',      900.0)
             do3d    = bool(s('do3d',      0))
             aniso   = float(s('anisotropy', 1.0))
+            stitch  = float(s('stitch',     0.0))
 
             if do3d and I.ndim != 3:
                 raise ValueError(f'do3d requested but I has {I.ndim} dimensions '
@@ -218,8 +224,15 @@ while True:
             _res = [None, None]
             def _run():
                 try:
+                    # 3-D stack: native do_3D, or 2-D per plane + stitching
+                    use_stitch = do3d and stitch > 0
                     kwargs = dict(diameter=diam, cellprob_threshold=cp,
-                                  flow_threshold=ft, do_3D=do3d)
+                                  flow_threshold=ft,
+                                  do_3D=do3d and not use_stitch)
+                    if use_stitch:
+                        kwargs['stitch_threshold'] = stitch
+                    elif do3d:
+                        kwargs['anisotropy'] = aniso
                     if niter > 0:
                         kwargs['niter'] = niter
                     # Suppress Cellpose's own stdout/stderr chatter
@@ -232,7 +245,7 @@ while True:
                             V = np.ascontiguousarray(np.transpose(I, (2, 0, 1)))
                             masks, _, _ = m.eval(V, channels=[0, 0],
                                                  channel_axis=None, z_axis=0,
-                                                 anisotropy=aniso, **kwargs)
+                                                 **kwargs)
                             masks = np.transpose(masks, (1, 2, 0))
                         else:
                             masks, _, _ = m.eval([I], **kwargs)
@@ -270,7 +283,8 @@ while True:
 
             sio.savemat(str(res_file), {'L': L}, format='5')
             print(f'[server] done {time.time()-t0:.1f}s  n={int(L.max())}  '
-                  f'{"3D" if do3d else "2D"} {L.shape}', flush=True)
+                  f'{("3D-stitch" if stitch > 0 else "3D") if do3d else "2D"} '
+                  f'{L.shape}', flush=True)
 
         except Exception:
             err_file.write_text(traceback.format_exc())
